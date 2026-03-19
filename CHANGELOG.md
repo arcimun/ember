@@ -2,6 +2,24 @@
 
 All notable changes to Ember will be documented in this file.
 
+## [1.1.0] - 2026-03-19
+
+### Added
+- Native Preferences window (Cmd+,) with API Key and Language settings
+- Language selection: Auto-detect, Russian, English, Spanish, French, German, Chinese, Japanese, Korean
+
+### Changed
+- Replaced SoX (`rec`) with native AVAudioEngine — zero external dependencies
+- Refactored single-file main.swift (694 lines) into 5 modular files: App, Config, Recorder, STT, Overlay
+- Encapsulated recording state in Recorder class with delegate pattern
+- DRY Info.plist: single template in Resources/, used by install.sh, build-dmg.sh, and CI
+- CI now auto-updates Homebrew tap on release (via HOMEBREW_TAP_TOKEN secret)
+- AVAudioConverter resamples from mic native rate to 16kHz mono for Groq Whisper
+- WAV writes use background DispatchQueue to avoid blocking audio thread
+
+### Removed
+- SoX dependency (`brew install sox` no longer required)
+
 ## [1.0.0] - 2026-03-18
 
 ### Added
