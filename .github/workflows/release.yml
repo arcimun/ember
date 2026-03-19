@@ -63,6 +63,8 @@ jobs:
               <string>Ember needs microphone access for voice transcription.</string>
               <key>SUFeedURL</key>
               <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
+              <key>SUPublicEDKey</key>
+              <string>pb+/wTvLW/nQQSTXkmSnvHTvjtuMFY4lHxaHaNYLFnY=</string>
               <key>SUEnableAutomaticChecks</key>
               <true/>
           </dict>

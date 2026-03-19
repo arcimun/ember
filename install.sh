@@ -52,7 +52,7 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
     <key>SUPublicEDKey</key>
-    <string></string>
+    <string>pb+/wTvLW/nQQSTXkmSnvHTvjtuMFY4lHxaHaNYLFnY=</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
 </dict>
