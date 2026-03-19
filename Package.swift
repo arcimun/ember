@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "DictationService",
+    name: "Ember",
     platforms: [.macOS(.v13)],
     products: [
         .executable(
-            name: "DictationService",
-            targets: ["DictationService"]
+            name: "Ember",
+            targets: ["Ember"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "DictationService",
+            name: "Ember",
             path: "Sources",
             resources: [
                 .copy("../Resources/overlay.html")

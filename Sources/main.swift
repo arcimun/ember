@@ -6,13 +6,13 @@ import Carbon.HIToolbox
 import WebKit
 
 // ═══════════════════════════════════════════════════════════════════
-//  Dictation Service v14 — Silent Mode + Violet Flame + Auto-paste
-//  ` record → Deepgram REST → Groq LLM fix → auto-paste
+//  Ember v1.0.0 — Voice-to-text for macOS
+//  ` record → Groq Whisper STT → Groq LLM fix → auto-paste
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Logging ─────────────────────────────────────────────────────
 let logFile = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Logs/DictationService.log")
+    .appendingPathComponent("Library/Logs/Ember.log")
 
 func log(_ msg: String) {
     let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
@@ -29,7 +29,6 @@ func log(_ msg: String) {
 
 // ─── Config ──────────────────────────────────────────────────────
 struct Config {
-    var deepgramKey: String = ""
     var groqKey: String = ""
     var language: String = "ru"
     var endDelay: Double = 0.8
@@ -37,9 +36,8 @@ struct Config {
     static func load() -> Config {
         var cfg = Config()
         for path in [
-            NSString(string: "~/.config/dictation-service/config.env").expandingTildeInPath,
+            NSString(string: "~/.config/ember/config.env").expandingTildeInPath,
             NSString(string: "~/.openclaw/.env").expandingTildeInPath,
-            NSString(string: "~/Dev/arcimun-voice/.env").expandingTildeInPath,
         ] {
             guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
             for line in contents.components(separatedBy: .newlines) {
@@ -49,7 +47,6 @@ struct Config {
                 guard parts.count == 2 else { continue }
                 let k = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 let v = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                if k == "DEEPGRAM_API_KEY" && cfg.deepgramKey.isEmpty { cfg.deepgramKey = v }
                 if k == "GROQ_API_KEY" && cfg.groqKey.isEmpty { cfg.groqKey = v }
                 if k == "DICTATION_LANGUAGE" { cfg.language = v }
             }
@@ -60,7 +57,7 @@ struct Config {
 
 let config = Config.load()
 let historyDir: String = {
-    let p = NSString(string: "~/.config/dictation-service/history").expandingTildeInPath
+    let p = NSString(string: "~/.config/ember/history").expandingTildeInPath
     try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
     return p
 }()
@@ -72,10 +69,6 @@ var recProcess: Process?
 var currentText = ""
 var recordingStartTime: Date?
 var currentAudioLevel: Float = 0
-
-// Mode: silent (no live typing, just overlay + clipboard) or live (type into field)
-// Silent = default. Faster, no bugs with text replacement. Cmd+V to paste.
-var dictationMode = "silent"
 
 weak var appDelegateRef: AppDelegate?
 
@@ -113,9 +106,7 @@ class PlasmaOverlayWindow: NSWindow {
         contentView = webView
 
         // Load overlay HTML
-        let htmlPath = Bundle.main.path(forResource: "overlay", ofType: "html")
-            ?? NSString(string: "~/Dev/dictation-service/Resources/overlay.html").expandingTildeInPath
-        if let path = htmlPath as String?, FileManager.default.fileExists(atPath: path) {
+        if let path = Bundle.main.path(forResource: "overlay", ofType: "html") {
             webView.loadFileURL(URL(fileURLWithPath: path), allowingReadAccessTo: URL(fileURLWithPath: path).deletingLastPathComponent())
             log("🎨 Overlay HTML loaded")
         } else {
@@ -123,7 +114,6 @@ class PlasmaOverlayWindow: NSWindow {
         }
     }
 
-    var isOrbMode = false
     var isShowing = false
 
     func show() {
@@ -144,93 +134,37 @@ class PlasmaOverlayWindow: NSWindow {
 
     func hide() {
         webView.evaluateJavaScript("window.setActive(false)", completionHandler: nil)
-
-        if isOrbMode {
-            // Orb stays visible — just stop audio monitoring
-            audioTimer?.invalidate(); audioTimer = nil
-        } else {
-            // Violet Flame hides completely
-            audioTimer?.invalidate(); audioTimer = nil
-            NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; self.animator().alphaValue = 0 }, completionHandler: {
-                self.orderOut(nil)
-                self.isShowing = false
-            })
-        }
+        audioTimer?.invalidate(); audioTimer = nil
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; self.animator().alphaValue = 0 }, completionHandler: {
+            self.orderOut(nil)
+            self.isShowing = false
+        })
     }
 
-    func showAlways() {
-        // For orb mode — show immediately and keep visible
-        if !isShowing {
-            orderFront(nil); alphaValue = 1
-            isShowing = true
-        }
-        webView.evaluateJavaScript("window.setActive(false)", completionHandler: nil)
-    }
-
-    func loadTheme(_ themeName: String) {
-        isOrbMode = (themeName == "Arcimun Orb")
-        let filename: String
-        switch themeName {
-        case "Arcimun Orb": filename = "overlay-orb"
-        default: filename = "overlay"
-        }
-
-        let resourcesDir = NSString(string: "~/Dev/dictation-service/Resources").expandingTildeInPath
-        let appResDir = Bundle.main.resourcePath ?? resourcesDir
-        let paths = [
-            (appResDir as NSString).appendingPathComponent("\(filename).html"),
-            (resourcesDir as NSString).appendingPathComponent("\(filename).html"),
-        ]
-
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                let url = URL(fileURLWithPath: path)
-                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-                log("🎨 Theme loaded: \(themeName) (\(filename).html)")
-                return
-            }
-        }
-        log("⚠️ Theme file not found: \(filename).html")
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Audio Recording → WAV file → Deepgram REST API (reliable)
-// No WebSocket — REST is more reliable for free tier
+// Audio Recording → WAV file → Groq Whisper API
 // ═══════════════════════════════════════════════════════════════════
 
 var audioFilePath = ""
 var audioMonitorProcess: Process?  // separate process for real-time audio level
 
-// ─── CGEvent typing (character by character) ─────────────────────
-func typeString(_ text: String) {
-    guard !text.isEmpty else { return }
-    for char in text {
-        typeChar(String(char))
-        usleep(1_500)
+// ─── Find rec (SoX) binary ──────────────────────────────────────
+func findRecBinary() -> String {
+    for path in ["/opt/homebrew/bin/rec", "/usr/local/bin/rec", "/usr/bin/rec"] {
+        if FileManager.default.fileExists(atPath: path) { return path }
     }
-}
-
-func typeChar(_ char: String) {
-    let utf16 = Array(char.utf16)
-    let src = CGEventSource(stateID: .combinedSessionState)
-    if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-        down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        down.post(tap: .cghidEventTap)
-    }
-    if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-        up.post(tap: .cghidEventTap)
-    }
-}
-
-func typeBackspace(_ count: Int) {
-    guard count > 0 else { return }
-    let src = CGEventSource(stateID: .combinedSessionState)
-    for _ in 0..<count {
-        if let d = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: true) { d.post(tap: .cghidEventTap) }
-        if let u = CGEvent(keyboardEventSource: src, virtualKey: 0x33, keyDown: false) { u.post(tap: .cghidEventTap) }
-        usleep(800)
-    }
+    // Try PATH via which
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    task.arguments = ["rec"]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    try? task.run()
+    task.waitUntilExit()
+    let result = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return result.isEmpty ? "/opt/homebrew/bin/rec" : result
 }
 
 // ─── LLM Post-Processing (Groq) ─────────────────────────────────
@@ -313,8 +247,9 @@ func startRecording() {
     log("🎙️ Recording to \(audioFilePath.components(separatedBy: "/").last ?? "")")
 
     // Record to WAV file using rec (SoX)
+    let recBin = findRecBinary()
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/rec")
+    process.executableURL = URL(fileURLWithPath: recBin)
     process.arguments = ["-q", "-r", "16000", "-c", "1", "-b", "16", audioFilePath]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -327,7 +262,7 @@ func startRecording() {
 
         // Start audio monitor (raw PCM to stdout for RMS level)
         let monitor = Process()
-        monitor.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/rec")
+        monitor.executableURL = URL(fileURLWithPath: recBin)
         monitor.arguments = ["-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-L", "-"]
         monitor.standardError = FileHandle.nullDevice
         let monPipe = Pipe()
@@ -360,7 +295,7 @@ func stopRecording() {
     // Switch overlay to "processing" mode (orange) before hiding
     appDelegateRef?.overlayWindow?.webView.evaluateJavaScript("window.setProcessing(true)", completionHandler: nil)
 
-    // Send WAV to Deepgram REST API
+    // Send WAV to Groq Whisper API
     guard FileManager.default.fileExists(atPath: audioFilePath) else {
         log("⚠️ No audio file"); isStopping = false; return
     }
@@ -505,7 +440,7 @@ func saveHistory() {
     let path = (historyDir as NSString).appendingPathComponent("\(f.string(from: Date())).json")
     let entry: [String: Any] = ["timestamp": ISO8601DateFormatter().string(from: Date()),
                                  "duration": round(dur*10)/10, "text": currentText,
-                                 "provider": "deepgram-nova-3", "language": config.language]
+                                 "provider": "groq-whisper", "language": config.language]
     if let d = try? JSONSerialization.data(withJSONObject: entry, options: .prettyPrinted) {
         try? d.write(to: URL(fileURLWithPath: path))
         log("💾 \(path.components(separatedBy: "/").last ?? "")")
@@ -600,14 +535,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var overlayWindow: PlasmaOverlayWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        log("🎤 Dictation Service v14 starting...")
+        log("🎤 Ember v1.0.0 starting...")
         appDelegateRef = self
-        if config.deepgramKey.isEmpty { log("⚠️ No DEEPGRAM_API_KEY!") }
 
         // Check Accessibility (for CGEvent typing — hotkey works without it)
         if !AXIsProcessTrusted() {
             log("⚠️ Accessibility not granted — text paste may not auto-type")
-            log("   Add DictationService.app in System Settings → Accessibility")
+            log("   Add Ember.app in System Settings → Accessibility")
             // Request permission prompt
             let opts = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true] as CFDictionary
             AXIsProcessTrustedWithOptions(opts)
@@ -624,20 +558,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(toggleMenuItem)
         menu.addItem(.separator())
-
-        // Theme submenu
-        let themeMenu = NSMenu()
-        for theme in ["Violet Flame", "Neon Circuit", "Minimal", "Arcimun Orb"] {
-            let item = NSMenuItem(title: theme, action: #selector(setTheme(_:)), keyEquivalent: "")
-            item.target = self
-            if theme == "Violet Flame" { item.state = .on }
-            themeMenu.addItem(item)
-        }
-        let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
-        themeItem.submenu = themeMenu
-        menu.addItem(themeItem)
-
-        menu.addItem(.separator())
         let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"); hi.target = self; menu.addItem(hi)
         menu.addItem(.separator())
         let qi = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"); qi.target = self; menu.addItem(qi)
@@ -645,7 +565,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         overlayWindow = PlasmaOverlayWindow()
 
-        // v9: Carbon hotkeys — no Accessibility needed!
+        // Carbon hotkeys — no Accessibility needed!
         if !setupCarbonHotkeys() {
             setupNSEventFallback()
         }
@@ -664,21 +584,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if isRecording { stopRecording() }
             else if !isStopping { startRecording() }
         }
-    }
-
-    @objc func setTheme(_ sender: NSMenuItem) {
-        if let menu = sender.menu {
-            for item in menu.items { item.state = .off }
-        }
-        sender.state = .on
-        overlayWindow?.loadTheme(sender.title)
-        // Orb mode: show immediately and keep visible
-        if sender.title == "Arcimun Orb" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
-                overlayWindow?.showAlways()
-            }
-        }
-        log("🎨 Theme switched: \(sender.title)")
     }
 
     @objc func openHistory() { NSWorkspace.shared.open(URL(fileURLWithPath: historyDir)) }

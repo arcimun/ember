@@ -1,16 +1,16 @@
 #!/bin/bash
-# Build and install Dictation Service v7
+# Build and install Ember v1.0.0
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="/Applications/DictationService.app"
+APP="/Applications/Ember.app"
 
 echo "Building..."
 swift build -c release 2>&1
 
 echo "Installing to $APP..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/release/DictationService "$APP/Contents/MacOS/DictationService"
+cp .build/release/Ember "$APP/Contents/MacOS/Ember"
 
 cat > "$APP/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -18,17 +18,17 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>DictationService</string>
+    <string>Ember</string>
     <key>CFBundleIdentifier</key>
-    <string>com.arcimun.dictation-service</string>
+    <string>com.arcimun.ember</string>
     <key>CFBundleName</key>
-    <string>Dictation Service</string>
+    <string>Ember</string>
     <key>CFBundleDisplayName</key>
-    <string>Dictation Service</string>
+    <string>Ember</string>
     <key>CFBundleVersion</key>
-    <string>7</string>
+    <string>1</string>
     <key>CFBundleShortVersionString</key>
-    <string>7.0</string>
+    <string>1.0.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSUIElement</key>
@@ -38,21 +38,22 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Dictation Service needs microphone access for speech transcription.</string>
+    <string>Ember needs microphone access for speech transcription.</string>
 </dict>
 </plist>
 EOF
 
 echo "Signing..."
-codesign --force --sign - --identifier com.arcimun.dictation-service "$APP" 2>&1
+codesign --force --sign - --identifier com.arcimun.ember "$APP" 2>&1
 
 echo "Stopping old instances..."
+pkill -f Ember 2>/dev/null || true
 pkill -f DictationService 2>/dev/null || true
 pkill -f dictation-service 2>/dev/null || true
 sleep 1
 
 echo ""
 echo "✅ Installed! Launch with:"
-echo "   open /Applications/DictationService.app"
+echo "   open /Applications/Ember.app"
 echo ""
-echo "First time: add DictationService.app to Accessibility in System Settings"
+echo "First time: add Ember.app to Accessibility in System Settings"
