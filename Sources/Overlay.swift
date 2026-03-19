@@ -36,6 +36,12 @@ class PlasmaOverlayWindow: NSWindow {
         webView.layer?.isOpaque = false
         contentView = webView
 
+        // Adapt to screen changes (switching between MacBook ↔ external display)
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.adaptToScreen()
+        }
+
         // Load overlay HTML
         if let path = Bundle.main.path(forResource: "overlay", ofType: "html") {
             webView.loadFileURL(URL(fileURLWithPath: path), allowingReadAccessTo: URL(fileURLWithPath: path).deletingLastPathComponent())
@@ -45,7 +51,15 @@ class PlasmaOverlayWindow: NSWindow {
         }
     }
 
+    func adaptToScreen() {
+        guard let screen = NSScreen.main else { return }
+        setFrame(screen.frame, display: true)
+        webView.frame = NSRect(origin: .zero, size: screen.frame.size)
+        log("🖥️ Overlay adapted to screen: \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    }
+
     func show() {
+        adaptToScreen()
         if !isShowing {
             orderFront(nil); alphaValue = 0
             NSAnimationContext.runAnimationGroup { $0.duration = 0.3; self.animator().alphaValue = 1 }
