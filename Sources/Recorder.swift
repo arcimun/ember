@@ -41,23 +41,34 @@ class Recorder {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Target format: 16kHz mono 16-bit signed integer (Groq Whisper compatible)
-        guard let wavFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true) else {
-            log("❌ Cannot create WAV format")
-            isRecording = false
-            return
-        }
+        // Record in mic's native format, write directly — no conversion in tap callback.
+        // AVAudioFile handles format conversion to 16kHz/mono/Int16 automatically via its
+        // processingFormat (input) vs fileFormat (output) when writing.
+        let wavSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
 
         do {
-            audioFile = try AVAudioFile(forWriting: URL(fileURLWithPath: audioFilePath), settings: wavFormat.settings)
+            // AVAudioFile with processingFormat=inputFormat writes the tap buffers directly,
+            // and internally converts to the file's target format (16kHz mono Int16).
+            audioFile = try AVAudioFile(forWriting: URL(fileURLWithPath: audioFilePath),
+                                        settings: wavSettings,
+                                        commonFormat: inputFormat.commonFormat,
+                                        interleaved: inputFormat.isInterleaved)
         } catch {
             log("❌ Cannot create WAV file: \(error)")
             isRecording = false
             return
         }
 
-        // Install tap on input node
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+        // Install tap — write buffers directly, no manual conversion needed
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
 
             // RMS level calculation (on audio thread — lightweight math only)
@@ -72,29 +83,10 @@ class Recorder {
                 }
             }
 
-            // Convert from input format to 16kHz mono Int16 and write to file
-            guard let converter = AVAudioConverter(from: inputFormat, to: wavFormat) else { return }
-            let ratio = 16000.0 / inputFormat.sampleRate
-            let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-            guard outputFrameCount > 0,
-                  let convertedBuffer = AVAudioPCMBuffer(pcmFormat: wavFormat, frameCapacity: outputFrameCount) else { return }
-
-            var error: NSError?
-            var hasData = true
-            converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                if hasData {
-                    outStatus.pointee = .haveData
-                    hasData = false
-                    return buffer
-                }
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-
-            if error == nil && convertedBuffer.frameLength > 0 {
-                self.writeQueue.async { [weak self] in
-                    try? self?.audioFile?.write(from: convertedBuffer)
-                }
+            // Write buffer to file on background queue
+            // AVAudioFile handles format conversion internally (48kHz float → 16kHz Int16)
+            self.writeQueue.async { [weak self] in
+                try? self?.audioFile?.write(from: buffer)
             }
         }
 
