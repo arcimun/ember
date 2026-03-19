@@ -32,45 +32,7 @@ if [ -d ".build/release/Sparkle.framework" ]; then
     cp -R .build/release/Sparkle.framework "${STAGING}/${APP_NAME}.app/Contents/Frameworks/"
 fi
 
-# Generate Info.plist (same as install.sh)
-cat > "${STAGING}/${APP_NAME}.app/Contents/Info.plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleIdentifier</key>
-    <string>${BUNDLE_ID}</string>
-    <key>CFBundleName</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleDisplayName</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleVersion</key>
-    <string>${VERSION}</string>
-    <key>CFBundleShortVersionString</key>
-    <string>${VERSION}</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>CFBundleIconFile</key>
-    <string>Ember</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Ember needs microphone access for voice transcription.</string>
-    <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
-    <key>SUPublicEDKey</key>
-    <string>pb+/wTvLW/nQQSTXkmSnvHTvjtuMFY4lHxaHaNYLFnY=</string>
-    <key>SUEnableAutomaticChecks</key>
-    <true/>
-</dict>
-</plist>
-PLIST
+sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "${STAGING}/${APP_NAME}.app/Contents/Info.plist"
 
 echo "Fixing framework paths..."
 install_name_tool -add_rpath "@executable_path/../Frameworks" "${STAGING}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true

@@ -64,7 +64,6 @@ Supported languages: any language supported by Whisper (en, ru, es, fr, de, zh, 
 ## Requirements
 
 - macOS 14+
-- [SoX](https://sox.sourceforge.net/) (`brew install sox`)
 - [Groq API key](https://console.groq.com/keys) (free tier available)
 
 ## License

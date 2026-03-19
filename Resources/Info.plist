@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>Ember</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.arcimun.ember</string>
+    <key>CFBundleName</key>
+    <string>Ember</string>
+    <key>CFBundleDisplayName</key>
+    <string>Ember</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleIconFile</key>
+    <string>Ember</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Ember needs microphone access for voice transcription.</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>pb+/wTvLW/nQQSTXkmSnvHTvjtuMFY4lHxaHaNYLFnY=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+</dict>
+</plist>

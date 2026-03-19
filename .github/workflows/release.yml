@@ -34,42 +34,7 @@ jobs:
             mkdir -p Ember.app/Contents/Frameworks
             cp -R .build/release/Sparkle.framework Ember.app/Contents/Frameworks/
           fi
-          cat > Ember.app/Contents/Info.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>Ember</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.arcimun.ember</string>
-              <key>CFBundleName</key>
-              <string>Ember</string>
-              <key>CFBundleVersion</key>
-              <string>${APP_VERSION}</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${APP_VERSION}</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSUIElement</key>
-              <true/>
-              <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-              <key>CFBundleIconFile</key>
-              <string>Ember</string>
-              <key>NSMicrophoneUsageDescription</key>
-              <string>Ember needs microphone access for voice transcription.</string>
-              <key>SUFeedURL</key>
-              <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
-              <key>SUPublicEDKey</key>
-              <string>pb+/wTvLW/nQQSTXkmSnvHTvjtuMFY4lHxaHaNYLFnY=</string>
-              <key>SUEnableAutomaticChecks</key>
-              <true/>
-          </dict>
-          </plist>
-          EOF
+          sed "s/__VERSION__/${APP_VERSION}/g" Resources/Info.plist > Ember.app/Contents/Info.plist
 
       - name: Fix framework paths and sign
         run: |
@@ -98,3 +63,37 @@ jobs:
         with:
           files: "Ember-*.dmg"
           generate_release_notes: true
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          APP_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap update"
+            exit 0
+          fi
+          DMG_FILE=$(ls Ember-*.dmg 2>/dev/null | head -1)
+          [ -z "$DMG_FILE" ] && exit 0
+          SHA256=$(shasum -a 256 "$DMG_FILE" | cut -d' ' -f1)
+
+          # Clone tap, update cask, push
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/arcimun/homebrew-tap.git" /tmp/tap
+          cat > /tmp/tap/Casks/ember.rb << RUBY
+          cask "ember" do
+            version "${APP_VERSION}"
+            sha256 "${SHA256}"
+            url "https://github.com/arcimun/ember/releases/download/v#{version}/Ember-#{version}.dmg"
+            name "Ember"
+            desc "Voice-to-text for macOS. Groq Whisper STT with LLM grammar correction."
+            homepage "https://github.com/arcimun/ember"
+            app "Ember.app"
+            auto_updates true
+          end
+          RUBY
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/ember.rb
+          git commit -m "Update Ember to v${APP_VERSION}" || true
+          git push
