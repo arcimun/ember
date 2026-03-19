@@ -490,7 +490,7 @@ func setupCarbonHotkeys() -> Bool {
     }
 
     // Register Tilde (keycode 50, no modifiers)
-    var tildeID = EventHotKeyID(signature: OSType(0x44494354), id: 1) // "DICT" + 1
+    let tildeID = EventHotKeyID(signature: OSType(0x44494354), id: 1) // "EMBR" + 1
     let tildeStatus = RegisterEventHotKey(
         UInt32(kVK_ANSI_Grave), 0, tildeID,
         GetApplicationEventTarget(), 0, &tildeHotkeyRef
@@ -504,7 +504,7 @@ func setupCarbonHotkeys() -> Bool {
     }
 
     // Register Escape (keycode 53, no modifiers)
-    var escID = EventHotKeyID(signature: OSType(0x44494354), id: 2) // "DICT" + 2
+    let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2) // "EMBR" + 2
     RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
 
     log("✅ Carbon hotkeys registered (tilde + escape)")
