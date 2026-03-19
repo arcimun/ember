@@ -103,6 +103,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     var overlayWindow: PlasmaOverlayWindow?
     var updaterController: SPUStandardUpdaterController!
     let recorder = Recorder()
+    var preferencesWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("🎤 Ember v1.0.0 starting...")
@@ -138,6 +139,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         toggleMenuItem.target = self
         let menu = NSMenu()
         menu.addItem(toggleMenuItem)
+        menu.addItem(.separator())
+        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
         menu.addItem(.separator())
         let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         updateItem.target = updaterController
@@ -190,6 +195,176 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
     @objc func openHistory() { NSWorkspace.shared.open(URL(fileURLWithPath: historyDir)) }
     @objc func quitApp() { if recorder.isRecording { recorder.stopRecording() }; NSApp.terminate(nil) }
+
+    // ─── Preferences Window ───────────────────────────────────────
+
+    private static let languages: [(code: String, label: String)] = [
+        ("auto", "Auto-detect"),
+        ("ru", "Russian"),
+        ("en", "English"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("ko", "Korean"),
+    ]
+
+    @objc func showPreferences() {
+        // If window already exists, just bring it forward
+        if let w = preferencesWindow, w.isVisible {
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 280),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ember Preferences"
+        window.center()
+        window.isReleasedWhenClosed = false
+
+        // ── API Key ──
+        let keyLabel = NSTextField(labelWithString: "API Key:")
+        keyLabel.font = .systemFont(ofSize: 13, weight: .medium)
+
+        let keyField = NSSecureTextField()
+        keyField.placeholderString = "gsk_..."
+        keyField.stringValue = config.groqKey
+        keyField.translatesAutoresizingMaskIntoConstraints = false
+
+        let keyRow = NSStackView(views: [keyLabel, keyField])
+        keyRow.orientation = .horizontal
+        keyRow.spacing = 10
+        keyRow.alignment = .centerY
+        keyLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        keyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // ── Language ──
+        let langLabel = NSTextField(labelWithString: "Language:")
+        langLabel.font = .systemFont(ofSize: 13, weight: .medium)
+
+        let langPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for lang in Self.languages {
+            langPopup.addItem(withTitle: lang.label)
+            langPopup.lastItem?.representedObject = lang.code
+        }
+        // Select current language
+        if let idx = Self.languages.firstIndex(where: { $0.code == config.language }) {
+            langPopup.selectItem(at: idx)
+        }
+        langPopup.translatesAutoresizingMaskIntoConstraints = false
+
+        let langRow = NSStackView(views: [langLabel, langPopup])
+        langRow.orientation = .horizontal
+        langRow.spacing = 10
+        langRow.alignment = .centerY
+        langLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        langPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // ── Align labels ──
+        keyLabel.widthAnchor.constraint(equalTo: langLabel.widthAnchor).isActive = true
+
+        // ── Get API Key link ──
+        let linkButton = NSButton(title: "Get API Key at console.groq.com", target: nil, action: nil)
+        linkButton.isBordered = false
+        linkButton.attributedTitle = NSAttributedString(
+            string: "Get API Key at console.groq.com",
+            attributes: [
+                .foregroundColor: NSColor.linkColor,
+                .font: NSFont.systemFont(ofSize: 12),
+                .underlineStyle: NSUnderlineStyle.single.rawValue
+            ]
+        )
+        linkButton.target = self
+        linkButton.action = #selector(openGroqConsole)
+
+        // ── Buttons ──
+        let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}" // Escape
+
+        let saveButton = NSButton(title: "Save", target: nil, action: nil)
+        saveButton.bezelStyle = .rounded
+        saveButton.keyEquivalent = "\r" // Enter
+
+        let buttonRow = NSStackView(views: [cancelButton, saveButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 10
+
+        // ── Main stack ──
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [keyRow, langRow, linkButton, spacer, buttonRow])
+        stack.orientation = .vertical
+        stack.spacing = 16
+        stack.alignment = .leading
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        window.contentView = stack
+
+        // ── Constraints ──
+        NSLayoutConstraint.activate([
+            keyRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
+            keyRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
+            langRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
+            langRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
+            buttonRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
+        ])
+
+        // ── Actions (closures via target-action) ──
+        cancelButton.target = self
+        cancelButton.action = #selector(preferencesCancel)
+
+        // Save needs references to the fields — store them via tags + associated approach
+        // Using a simpler approach: store references and use a single save action
+        self.preferencesWindow = window
+        self._prefsKeyField = keyField
+        self._prefsLangPopup = langPopup
+
+        saveButton.target = self
+        saveButton.action = #selector(preferencesSave)
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // Stored references for preferences fields (weak not needed — window holds them)
+    private var _prefsKeyField: NSSecureTextField?
+    private var _prefsLangPopup: NSPopUpButton?
+
+    @objc private func preferencesSave() {
+        guard let keyField = _prefsKeyField, let langPopup = _prefsLangPopup else { return }
+        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let langCode = (langPopup.selectedItem?.representedObject as? String) ?? "auto"
+
+        Config.save(groqKey: key, language: langCode)
+        config = Config.load()
+
+        preferencesWindow?.close()
+        preferencesWindow = nil
+        _prefsKeyField = nil
+        _prefsLangPopup = nil
+    }
+
+    @objc private func preferencesCancel() {
+        preferencesWindow?.close()
+        preferencesWindow = nil
+        _prefsKeyField = nil
+        _prefsLangPopup = nil
+    }
+
+    @objc private func openGroqConsole() {
+        if let url = URL(string: "https://console.groq.com/keys") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     // ─── RecorderDelegate ─────────────────────────────────────────
     func recorderDidStartRecording() {

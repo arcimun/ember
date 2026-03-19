@@ -44,6 +44,15 @@ struct Config {
         }
         return cfg
     }
+
+    static func save(groqKey: String, language: String) {
+        let configDir = NSString(string: "~/.config/ember").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        let configPath = (configDir as NSString).appendingPathComponent("config.env")
+        let contents = "GROQ_API_KEY=\(groqKey)\nDICTATION_LANGUAGE=\(language)\n"
+        try? contents.write(toFile: configPath, atomically: true, encoding: .utf8)
+        log("✅ Config saved to \(configPath)")
+    }
 }
 
 var config = Config.load()
