@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CymaticSphere Overlay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: transparent; overflow: hidden; width: 100%; height: 100%; }
+
+  #orb-container {
+    position: fixed;
+    bottom: 80px;
+    left: 20px;
+    width: 300px;
+    height: 300px;
+    z-index: 10;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #orb-container.dragging { cursor: grabbing; }
+  #orb-container canvas {
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+  }
+
+  #gui-container {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    width: 320px;
+    z-index: 950;
+    display: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+  }
+}
+</script>
+</head>
+<body>
+<div id="orb-container"></div>
+<div id="gui-container"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import GUI from 'lil-gui';
+
+/* ─── Constants ─── */
+const DEFAULT_PARAMS = {
+  state: 1,
+  morphSpeed: 0.02,
+  rotationSpeed: 0.4,
+  pointSize: 0.07,
+  colorInside: "#f6c453",
+  colorOutside: "#4c5d73",
+  particleCount: 10000,
+  spread: 12,
+  cameraDistance: 14.99,
+  baseFrequency: 1,
+  freqRange: 600,
+  cymaticAmplitude: 1.0,
+  amplitudeJitter: 0.3,
+  maxDisplacement: 1.3,
+  micGain: 1.2,
+  volumeSmooth: 0.15,
+  particlesEnabled: true,
+  networkEnabled: false,
+  plasmaEnabled: true,
+  neuroEnabled: false,
+  showNetwork: false,
+  nodeCount: 180,
+  connectionMaxDist: 3.2,
+  pulseSpeed: 1.2,
+  growth: 1.0,
+  glowIntensity: 2.0,
+  glowOpacity: 0.7,
+  networkOpacity: 0.25,
+  networkColor: "#00cfff",
+  impulseRate: 2.0,
+  impulseSpeed: 1.2,
+  impulseDecay: 0.6,
+  impulseSize: 0.06,
+  impulseGlow: 1.2,
+  impulseColorA: "#00f2ff",
+  impulseColorB: "#ff7b54",
+  plasmaBreathDepth: 0.5,
+  plasmaEnergyFlow: 0.6,
+  plasmaVolatility: 0.3,
+  plasmaColor1: "#ff2255",
+  plasmaColor2: "#ff8844",
+  plasmaColor3: "#ffcc00",
+  auraEnabled: false,
+  auraColor: "#ff4466",
+  meridiansEnabled: false,
+  heartEnabled: false,
+  sparksEnabled: false,
+  neuroNodeCount: 300,
+  neuroLinkDist: 4.2,
+  neuroRotation: 0.02,
+  neuroColor: "#bc8aff",
+  neuroPulse: 0.8,
+  neuroInsightLock: true,
+  orbitsEnabled: false,
+  orbitCount: 3,
+  orbitSpeed: 0.8,
+  orbitRadiusBase: 7.5,
+  orbitSpacing: 1.2,
+  orbitOpacity: 0.5,
+  orbitColor: "#00ffaa",
+};
+
+const noiseGLSL = `
+  vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+  vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+  float snoise(vec3 v){
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + 2.0 * C.xxx;
+    vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+    i = mod(i, 289.0);
+    vec4 p = permute(permute(permute(i.z + vec4(0.0, i1.z, i2.z, 1.0)) + i.y + vec4(0.0, i1.y, i2.y, 1.0)) + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 1.0/7.0;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+  }
+`;
+
+const STATE_MAP = [
+  { id: "idle", label: "Idle" },
+  { id: "connecting", label: "Connecting" },
+  { id: "connected", label: "Connected" },
+  { id: "listening", label: "Listening" },
+  { id: "thinking", label: "Thinking" },
+  { id: "responding", label: "Responding" },
+];
+
+const STORAGE_VERSION = 2;
+const STORAGE_KEY = `cymatic_sphere_profiles_v${STORAGE_VERSION}`;
+const IMPULSE_POOL = 120;
+const ORB_SIZE = 300;
+
+/* ═══════════════════════════════════════════════════════════════
+   ENGINE
+   ═══════════════════════════════════════════════════════════════ */
+function createEngine(container, guiContainer) {
+  const params = { ...DEFAULT_PARAMS };
+  const tmpVec3 = new THREE.Vector3();
+
+  let scene, camera, renderer, composer, bloomPass;
+
+  // Particles
+  let particles, particleGeometry, particleMaterial;
+  let positions, targetPositions, colors;
+
+  // Network
+  let nodes = null, edges = null;
+  let nodeData = [];
+  let nodeGeometry, edgeGeometry;
+  let edgePairs = [];
+
+  // Impulses
+  let impulses = [];
+  let impulseGeom, impulseMat, impulsePoints = null;
+
+  // Neuro
+  const neuro = {
+    group: null, nodes: null, edges: null, data: [],
+    geoNodes: null, geoEdges: null, insightActive: false, targetYaw: 0,
+  };
+
+  // Orbits
+  const orbits = { group: null, rings: [] };
+
+  // Plasma
+  let plasma = {
+    membrane: null, meridianGroup: null, meridianGeoms: [], meridianMats: [],
+    heart: null, aura: null, sparks: null, sparkGeom: null,
+    sparkVelocities: null, sparkLifetimes: null,
+  };
+
+  // Audio — driven externally via setAudioLevel
+  let volume = 0;
+  let externalVolume = 0;
+  let agentSpeaking = false;
+
+  // State
+  let prevTime = performance.now() * 0.001;
+  let animFrameId = 0;
+  let disposed = false;
+
+  // GUI
+  let gui = null;
+  let guiControllers = {};
+  let profiles = {};
+  let currentStateId = STATE_MAP[0].id;
+  const stateModel = { state: currentStateId };
+  let isApplyingProfile = false;
+
+  // FPS
+  let frameCount = 0, lastFpsTime = performance.now(), fps = 0;
+
+  let frameCallback = null;
+  let saveCallback = null;
+
+  /* ── Helpers ── */
+  function fibonacciOnSphere(i, total, radius) {
+    const offset = 2 / total;
+    const increment = Math.PI * (3 - Math.sqrt(5));
+    const y = i * offset - 1 + offset / 2;
+    const r = Math.sqrt(1 - y * y);
+    const phi = i * increment;
+    return new THREE.Vector3(radius * Math.cos(phi) * r, radius * y, radius * Math.sin(phi) * r);
+  }
+
+  function createParticles() {
+    if (particles) scene.remove(particles);
+    const count = params.particleCount;
+    particleGeometry = new THREE.BufferGeometry();
+    positions = new Float32Array(count * 3);
+    targetPositions = new Float32Array(count * 3);
+    colors = new Float32Array(count * 3);
+
+    for (let i = 0; i < count; i++) {
+      const x = (Math.random() - 0.5) * params.spread;
+      const y = (Math.random() - 0.5) * params.spread;
+      const z = (Math.random() - 0.5) * params.spread;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+      const dist = Math.sqrt(x * x + y * y + z * z) / (params.spread * 0.5);
+      const color = new THREE.Color(params.colorOutside).lerp(new THREE.Color(params.colorInside), 1 - Math.min(dist, 1));
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+    }
+
+    particleGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    particleGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+    particleMaterial = new THREE.PointsMaterial({
+      size: params.pointSize,
+      vertexColors: true,
+      transparent: true,
+      opacity: params.glowOpacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+    updateTargets();
+  }
+
+  function updateTargets() {
+    const count = params.particleCount;
+    const state = params.state;
+    const complexity = 6;
+    for (let i = 0; i < count; i++) {
+      let tx, ty, tz;
+      if (state === 0) {
+        tx = (Math.random() - 0.5) * params.spread;
+        ty = (Math.random() - 0.5) * params.spread;
+        tz = (Math.random() - 0.5) * params.spread;
+      } else if (state === 1) {
+        const v = fibonacciOnSphere(i, count, 5 + (Math.random() - 0.5) * 0.4);
+        tx = v.x; ty = v.y; tz = v.z;
+      } else {
+        const angle = (i / count) * Math.PI * 2 * complexity;
+        const baseR = (i / count) * 6;
+        const r = baseR + Math.sin(angle) * 1.5;
+        tx = r * Math.cos((i / count) * Math.PI * 2);
+        ty = r * Math.sin((i / count) * Math.PI * 2);
+        tz = Math.sin(r * 2) * 0.6;
+      }
+      targetPositions[i * 3] = tx;
+      targetPositions[i * 3 + 1] = ty;
+      targetPositions[i * 3 + 2] = tz;
+    }
+    neuro.insightActive = false;
+  }
+
+  function createNetwork() {
+    if (nodes) scene.remove(nodes);
+    if (edges) scene.remove(edges);
+    nodeData = [];
+    edgePairs = [];
+    const pos = [];
+    for (let i = 0; i < params.nodeCount; i++) {
+      const v = fibonacciOnSphere(i, params.nodeCount, 5 + Math.random() * 0.4);
+      nodeData.push({ pos: v.clone(), origin: v.clone(), phase: Math.random() * Math.PI * 2 });
+      pos.push(v.x, v.y, v.z);
+    }
+    nodeGeometry = new THREE.BufferGeometry();
+    nodeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    const nodeMat = new THREE.PointsMaterial({
+      color: params.networkColor,
+      size: 0.08,
+      transparent: true,
+      opacity: Math.min(params.glowOpacity + 0.2, 1),
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    nodes = new THREE.Points(nodeGeometry, nodeMat);
+    scene.add(nodes);
+    updateEdges();
+  }
+
+  function updateEdges() {
+    if (edges) scene.remove(edges);
+    edgePairs = [];
+    const edgePositions = [];
+    const color = new THREE.Color(params.networkColor);
+    const edgeColors = [];
+    for (let i = 0; i < nodeData.length; i++) {
+      for (let j = i + 1; j < nodeData.length; j++) {
+        const d = nodeData[i].pos.distanceTo(nodeData[j].pos);
+        if (d < params.connectionMaxDist) {
+          edgePositions.push(nodeData[i].pos.x, nodeData[i].pos.y, nodeData[i].pos.z);
+          edgePositions.push(nodeData[j].pos.x, nodeData[j].pos.y, nodeData[j].pos.z);
+          edgeColors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+          edgePairs.push([i, j]);
+        }
+      }
+    }
+    edgeGeometry = new THREE.BufferGeometry();
+    edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgePositions, 3));
+    edgeGeometry.setAttribute("color", new THREE.Float32BufferAttribute(edgeColors, 3));
+    const edgeMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: params.networkOpacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    edges = new THREE.LineSegments(edgeGeometry, edgeMat);
+    scene.add(edges);
+    resetImpulses();
+  }
+
+  /* ── Impulse system ── */
+  function initImpulseSystem() {
+    if (impulsePoints) scene.remove(impulsePoints);
+    impulses = new Array(IMPULSE_POOL).fill(0).map(() => ({
+      active: false, edgeIndex: 0, t: 0, speed: params.impulseSpeed,
+      life: 0, color: new THREE.Color(params.impulseColorA),
+    }));
+    impulseGeom = new THREE.BufferGeometry();
+    impulseGeom.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(IMPULSE_POOL * 3), 3));
+    impulseGeom.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(IMPULSE_POOL * 3), 3));
+    impulseMat = new THREE.PointsMaterial({
+      size: params.impulseSize, vertexColors: true, transparent: true,
+      opacity: params.impulseGlow, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    impulsePoints = new THREE.Points(impulseGeom, impulseMat);
+    impulsePoints.renderOrder = 2;
+    scene.add(impulsePoints);
+  }
+
+  function resetImpulses() {
+    if (!impulses.length) return;
+    impulses.forEach((p) => { p.active = false; p.t = 0; p.life = 0; });
+    if (impulseGeom) {
+      const pos = impulseGeom.attributes.position.array;
+      for (let i = 0; i < pos.length; i++) pos[i] = 0;
+      impulseGeom.attributes.position.needsUpdate = true;
+    }
+  }
+
+  function spawnImpulse(impulse) {
+    if (!edgePairs.length) return;
+    const pair = edgePairs[Math.floor(Math.random() * edgePairs.length)];
+    impulse.edgeIndex = pair;
+    impulse.t = 0;
+    impulse.speed = params.impulseSpeed * (0.7 + Math.random() * 0.6);
+    impulse.life = 1;
+    impulse.active = true;
+    const ca = new THREE.Color(params.impulseColorA);
+    const cb = new THREE.Color(params.impulseColorB);
+    impulse.color = ca.clone().lerp(cb, Math.random());
+  }
+
+  function updateImpulses(delta) {
+    if (!impulseGeom || !nodeData.length || !edgePairs.length) return;
+    const posAttr = impulseGeom.attributes.position;
+    const colAttr = impulseGeom.attributes.color;
+    let needsPos = false;
+    let needsCol = false;
+    const spawnProb = Math.min(1, params.impulseRate * delta);
+
+    for (let i = 0; i < impulses.length; i++) {
+      const p = impulses[i];
+      if (!p.active) {
+        if (Math.random() < spawnProb) spawnImpulse(p);
+        else continue;
+      }
+      p.t += delta * p.speed;
+      p.life -= delta * params.impulseDecay;
+      if (p.t >= 1 || p.life <= 0) {
+        p.active = false;
+        posAttr.array[i * 3] = 0;
+        posAttr.array[i * 3 + 1] = 0;
+        posAttr.array[i * 3 + 2] = 0;
+        needsPos = true;
+        continue;
+      }
+      const pair = p.edgeIndex;
+      const a = nodeData[pair[0]]?.pos;
+      const b = nodeData[pair[1]]?.pos;
+      if (!a || !b) { p.active = false; continue; }
+      const x = THREE.MathUtils.lerp(a.x, b.x, p.t);
+      const y = THREE.MathUtils.lerp(a.y, b.y, p.t);
+      const z = THREE.MathUtils.lerp(a.z, b.z, p.t);
+      posAttr.array[i * 3] = x;
+      posAttr.array[i * 3 + 1] = y;
+      posAttr.array[i * 3 + 2] = z;
+      const fade = Math.max(0, p.life);
+      colAttr.array[i * 3] = p.color.r * fade;
+      colAttr.array[i * 3 + 1] = p.color.g * fade;
+      colAttr.array[i * 3 + 2] = p.color.b * fade;
+      needsPos = true;
+      needsCol = true;
+    }
+    if (needsPos) posAttr.needsUpdate = true;
+    if (needsCol) colAttr.needsUpdate = true;
+    if (impulsePoints) {
+      impulsePoints.visible = params.networkEnabled && params.showNetwork;
+      impulsePoints.material.size = params.impulseSize;
+      impulsePoints.material.opacity = params.impulseGlow;
+    }
+  }
+
+  /* ── Neuro layer ── */
+  function createNeuroLayer() {
+    if (neuro.group) scene.remove(neuro.group);
+    neuro.group = new THREE.Group();
+    neuro.data = [];
+    const count = params.neuroNodeCount;
+    const nPositions = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 4.0 + Math.random() * 0.5;
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = r * Math.sin(phi) * Math.sin(theta);
+      const z = r * Math.cos(phi);
+      nPositions[i * 3] = x;
+      nPositions[i * 3 + 1] = y;
+      nPositions[i * 3 + 2] = z;
+      neuro.data.push({ pos: new THREE.Vector3(x, y, z), origin: new THREE.Vector3(x, y, z), phase: Math.random() * Math.PI * 2 });
+    }
+    neuro.geoNodes = new THREE.BufferGeometry();
+    neuro.geoNodes.setAttribute("position", new THREE.BufferAttribute(nPositions, 3));
+    const nodeMat = new THREE.PointsMaterial({
+      color: params.neuroColor, size: 0.08, transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    neuro.nodes = new THREE.Points(neuro.geoNodes, nodeMat);
+    neuro.group.add(neuro.nodes);
+
+    const edgePos = [];
+    for (let i = 0; i < count; i++) {
+      for (let j = i + 1; j < count; j++) {
+        const d = neuro.data[i].pos.distanceTo(neuro.data[j].pos);
+        if (d < params.neuroLinkDist) {
+          edgePos.push(neuro.data[i].pos.x, neuro.data[i].pos.y, neuro.data[i].pos.z);
+          edgePos.push(neuro.data[j].pos.x, neuro.data[j].pos.y, neuro.data[j].pos.z);
+        }
+      }
+    }
+    neuro.geoEdges = new THREE.BufferGeometry();
+    neuro.geoEdges.setAttribute("position", new THREE.Float32BufferAttribute(edgePos, 3));
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: params.neuroColor, transparent: true, opacity: 0.3,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    neuro.edges = new THREE.LineSegments(neuro.geoEdges, edgeMat);
+    neuro.group.add(neuro.edges);
+    scene.add(neuro.group);
+  }
+
+  /* ── Orbits ── */
+  function createOrbits() {
+    if (orbits.group) scene.remove(orbits.group);
+    orbits.group = new THREE.Group();
+    orbits.rings = [];
+    const count = params.orbitCount;
+    const palette = [params.orbitColor, "#00ccff", "#00ffcc"];
+
+    for (let r = 0; r < count; r++) {
+      const radius = params.orbitRadiusBase + r * params.orbitSpacing;
+      const particleCount = 400 + r * 100;
+      const geom = new THREE.BufferGeometry();
+      const pos = new Float32Array(particleCount * 3);
+      const col = new Float32Array(particleCount * 3);
+      const phases = new Float32Array(particleCount);
+      const ringColor = new THREE.Color(palette[r % palette.length]);
+
+      for (let i = 0; i < particleCount; i++) {
+        const angle = (i / particleCount) * Math.PI * 2;
+        pos[i * 3] = Math.cos(angle) * radius;
+        pos[i * 3 + 1] = 0;
+        pos[i * 3 + 2] = Math.sin(angle) * radius;
+        phases[i] = Math.random() * Math.PI * 2;
+        col[i * 3] = ringColor.r;
+        col[i * 3 + 1] = ringColor.g;
+        col[i * 3 + 2] = ringColor.b;
+      }
+      geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geom.setAttribute("color", new THREE.BufferAttribute(col, 3));
+      const mat = new THREE.PointsMaterial({
+        size: 0.015, vertexColors: true, transparent: true,
+        opacity: params.orbitOpacity, blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const ring = new THREE.Points(geom, mat);
+      ring.rotation.x = Math.random() * 0.4 - 0.2;
+      ring.rotation.z = Math.random() * 0.4 - 0.2;
+      orbits.rings.push({ mesh: ring, phases, speed: (Math.random() > 0.5 ? 1 : -1) * (0.2 + Math.random() * 0.3) });
+      orbits.group.add(ring);
+    }
+    scene.add(orbits.group);
+  }
+
+  /* ── Plasma ── */
+  function createPlasma() {
+    if (plasma.membrane) scene.remove(plasma.membrane);
+    if (plasma.meridianGroup) scene.remove(plasma.meridianGroup);
+    if (plasma.heart) scene.remove(plasma.heart);
+    if (plasma.aura) scene.remove(plasma.aura);
+    if (plasma.sparks) scene.remove(plasma.sparks);
+
+    plasma = {
+      membrane: null, meridianGroup: null, meridianGeoms: [], meridianMats: [],
+      heart: null, aura: null, sparks: null, sparkGeom: null,
+      sparkVelocities: null, sparkLifetimes: null,
+    };
+
+    /* Membrane */
+    const membraneMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uBreath: { value: params.plasmaBreathDepth },
+        uEnergy: { value: params.plasmaEnergyFlow },
+        uVolatility: { value: params.plasmaVolatility },
+        uColor1: { value: new THREE.Color(params.plasmaColor1) },
+        uColor2: { value: new THREE.Color(params.plasmaColor2) },
+        uColor3: { value: new THREE.Color(params.plasmaColor3) },
+      },
+      vertexShader: `
+        ${noiseGLSL}
+        uniform float uTime;
+        uniform float uBreath;
+        uniform float uVolatility;
+        varying vec3 vNormal;
+        varying float vDisp;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          float breath = sin(uTime * 1.2) * 0.5 + 0.5;
+          float breathScale = 1.0 + breath * uBreath * 0.15;
+          float noise1 = snoise(position * 2.0 + uTime * 0.3);
+          float noise2 = snoise(position * 4.0 - uTime * 0.5) * 0.5;
+          float turbulence = (noise1 + noise2) * uVolatility * 0.3;
+          vDisp = turbulence;
+          vec3 displaced = normal * (breathScale + turbulence);
+          vec3 newPos = position + displaced * 0.2;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uEnergy;
+        uniform vec3 uColor1;
+        uniform vec3 uColor2;
+        uniform vec3 uColor3;
+        varying vec3 vNormal;
+        varying float vDisp;
+        void main() {
+          float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.5);
+          float t = vDisp * 2.0 + 0.5;
+          vec3 color = mix(uColor1, uColor2, clamp(t*2.0, 0.0, 1.0));
+          color = mix(color, uColor3, clamp((t-0.5)*2.0, 0.0, 1.0));
+          float pulse = sin(uTime * 3.0) * 0.5 + 0.5;
+          color = mix(color, uColor3, pulse * uEnergy * 0.3);
+          float alpha = 0.4 + fresnel * 0.6;
+          gl_FragColor = vec4(color * (0.8 + fresnel * 0.5), alpha);
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    plasma.membrane = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 96), membraneMat);
+    plasma.membrane.visible = params.plasmaEnabled;
+    scene.add(plasma.membrane);
+
+    /* Meridians */
+    plasma.meridianGroup = new THREE.Group();
+    const meridianCount = 8;
+    const particlesPerMeridian = 80;
+    for (let m = 0; m < meridianCount; m++) {
+      const geom = new THREE.BufferGeometry();
+      const mPositions = new Float32Array(particlesPerMeridian * 3);
+      const mColors = new Float32Array(particlesPerMeridian * 3);
+      const baseAngle = (m / meridianCount) * Math.PI * 2;
+      for (let i = 0; i < particlesPerMeridian; i++) {
+        const t = i / particlesPerMeridian;
+        const phi = t * Math.PI;
+        const theta = baseAngle + Math.sin(t * Math.PI * 2) * 0.3;
+        const r = 1.08;
+        mPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        mPositions[i * 3 + 1] = r * Math.cos(phi);
+        mPositions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+        mColors[i * 3] = 1;
+        mColors[i * 3 + 1] = 0.5;
+        mColors[i * 3 + 2] = 0.2;
+      }
+      geom.setAttribute("position", new THREE.BufferAttribute(mPositions, 3));
+      geom.setAttribute("color", new THREE.BufferAttribute(mColors, 3));
+      const mat = new THREE.PointsMaterial({
+        size: 0.02, vertexColors: true, transparent: true, opacity: 0.7,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const points = new THREE.Points(geom, mat);
+      points.userData = { baseAngle, offset: m * 0.2 };
+      plasma.meridianGeoms.push(geom);
+      plasma.meridianMats.push(mat);
+      plasma.meridianGroup.add(points);
+    }
+    plasma.meridianGroup.visible = params.meridiansEnabled;
+    scene.add(plasma.meridianGroup);
+
+    /* Heart */
+    const heartMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uBreath: { value: params.plasmaBreathDepth } },
+      vertexShader: `varying vec3 vNormal; void main(){ vNormal=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader: `
+        uniform float uTime; uniform float uBreath; varying vec3 vNormal;
+        void main(){ float fresnel=pow(1.0-abs(dot(vNormal,vec3(0.,0.,1.))),3.0);
+          float beat=pow(sin(uTime*4.0)*0.5+0.5,8.0);
+          vec3 color=mix(vec3(0.8,0.1,0.2),vec3(1.0,0.6,0.3),beat);
+          float alpha=fresnel*(0.3+beat*0.5); gl_FragColor=vec4(color,alpha);
+        }`,
+      transparent: true, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    plasma.heart = new THREE.Mesh(new THREE.SphereGeometry(0.3, 32, 32), heartMat);
+    plasma.heart.visible = params.heartEnabled;
+    scene.add(plasma.heart);
+
+    /* Aura */
+    const auraMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(params.auraColor) } },
+      vertexShader: `varying vec3 vNormal; void main(){ vNormal=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader: `
+        uniform float uTime; uniform vec3 uColor; varying vec3 vNormal;
+        void main(){ float fresnel=pow(1.0-abs(dot(vNormal,vec3(0.,0.,1.0))),5.0);
+          float shimmer=0.8+0.2*sin(uTime*2.0);
+          gl_FragColor=vec4(uColor*shimmer, fresnel*0.2);
+        }`,
+      transparent: true, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    plasma.aura = new THREE.Mesh(new THREE.SphereGeometry(1.4, 64, 64), auraMat);
+    plasma.aura.visible = params.auraEnabled;
+    scene.add(plasma.aura);
+
+    /* Sparks */
+    const sparkCount = 300;
+    plasma.sparkGeom = new THREE.BufferGeometry();
+    const sparkPositions = new Float32Array(sparkCount * 3);
+    const sparkColors = new Float32Array(sparkCount * 3);
+    plasma.sparkVelocities = new Float32Array(sparkCount * 3);
+    plasma.sparkLifetimes = new Float32Array(sparkCount);
+
+    function resetSpark(i) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 1.1 + Math.random() * 0.1;
+      sparkPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      sparkPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      sparkPositions[i * 3 + 2] = r * Math.cos(phi);
+      plasma.sparkVelocities[i * 3] = sparkPositions[i * 3] * 0.01 + (Math.random() - 0.5) * 0.005;
+      plasma.sparkVelocities[i * 3 + 1] = sparkPositions[i * 3 + 1] * 0.01 + (Math.random() - 0.5) * 0.005;
+      plasma.sparkVelocities[i * 3 + 2] = sparkPositions[i * 3 + 2] * 0.01 + (Math.random() - 0.5) * 0.005;
+      plasma.sparkLifetimes[i] = 1;
+      sparkColors[i * 3] = 1;
+      sparkColors[i * 3 + 1] = 0.4 + Math.random() * 0.4;
+      sparkColors[i * 3 + 2] = 0.1 + Math.random() * 0.2;
+    }
+    for (let i = 0; i < sparkCount; i++) {
+      resetSpark(i);
+      plasma.sparkLifetimes[i] = Math.random();
+    }
+    plasma.sparkGeom.setAttribute("position", new THREE.BufferAttribute(sparkPositions, 3));
+    plasma.sparkGeom.setAttribute("color", new THREE.BufferAttribute(sparkColors, 3));
+    const sparkMat = new THREE.PointsMaterial({
+      size: 0.025, vertexColors: true, transparent: true, opacity: 0.7,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    plasma.sparks = new THREE.Points(plasma.sparkGeom, sparkMat);
+    plasma.sparks.visible = params.sparksEnabled;
+    plasma.sparks.userData.resetSpark = resetSpark;
+    scene.add(plasma.sparks);
+  }
+
+  function updatePlasmaUniforms(time) {
+    if (!plasma.membrane) return;
+    const mu = plasma.membrane.material.uniforms;
+    mu.uTime.value = time;
+    mu.uBreath.value = params.plasmaBreathDepth;
+    mu.uEnergy.value = params.plasmaEnergyFlow;
+    mu.uVolatility.value = params.plasmaVolatility;
+    mu.uColor1.value.set(params.plasmaColor1);
+    mu.uColor2.value.set(params.plasmaColor2);
+    mu.uColor3.value.set(params.plasmaColor3);
+    if (plasma.aura) {
+      const au = plasma.aura.material.uniforms;
+      au.uTime.value = time;
+      au.uColor.value.set(params.auraColor);
+    }
+    if (plasma.heart) {
+      const hu = plasma.heart.material.uniforms;
+      hu.uTime.value = time;
+      hu.uBreath.value = params.plasmaBreathDepth;
+    }
+  }
+
+  function updatePlasmaVisibility() {
+    if (plasma.membrane) plasma.membrane.visible = params.plasmaEnabled;
+    if (plasma.meridianGroup) plasma.meridianGroup.visible = params.plasmaEnabled && params.meridiansEnabled;
+    if (plasma.heart) plasma.heart.visible = params.plasmaEnabled && params.heartEnabled;
+    if (plasma.aura) plasma.aura.visible = params.plasmaEnabled && params.auraEnabled;
+    if (plasma.sparks) plasma.sparks.visible = params.plasmaEnabled && params.sparksEnabled;
+  }
+
+  /* ── Profiles ── */
+  function snapshotState() {
+    return {
+      params: { ...params },
+      camera: { position: camera.position.toArray() },
+    };
+  }
+
+  function mergeParams(base, incoming) {
+    const out = { ...base };
+    Object.keys(incoming).forEach((k) => {
+      if (k in base && incoming[k] !== undefined) out[k] = incoming[k];
+    });
+    return out;
+  }
+
+  function applySnapshot(snapshot) {
+    if (!snapshot) snapshot = snapshotState();
+    const merged = mergeParams(DEFAULT_PARAMS, snapshot.params || {});
+    const needRecreateNetwork = merged.nodeCount !== params.nodeCount || merged.connectionMaxDist !== params.connectionMaxDist;
+    Object.assign(params, merged);
+    updateTargets();
+    if (snapshot.camera && snapshot.camera.position) {
+      camera.position.fromArray(snapshot.camera.position);
+    }
+    if (needRecreateNetwork) createNetwork();
+    updatePlasmaVisibility();
+    createNeuroLayer();
+    if (particleMaterial) particleMaterial.size = params.pointSize;
+    if (nodes) nodes.material.opacity = Math.min(params.glowOpacity + 0.2, 1);
+    refreshGUI();
+  }
+
+  function saveProfile(stateId) {
+    profiles[stateId] = snapshotState();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ profiles, currentStateId: stateId }));
+    } catch { /* */ }
+    if (saveCallback) saveCallback({ profiles, currentStateId: stateId });
+  }
+
+  function loadProfiles() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        profiles = parsed.profiles || {};
+        currentStateId = parsed.currentStateId || currentStateId;
+      }
+    } catch { /* */ }
+    if (!profiles[currentStateId]) {
+      profiles[currentStateId] = snapshotState();
+    }
+  }
+
+  function applyProfile(stateId) {
+    const snap = profiles[stateId] || profiles[currentStateId];
+    isApplyingProfile = true;
+    applySnapshot(snap);
+    currentStateId = stateId;
+    stateModel.state = stateId;
+    if (guiControllers.stateSelector) guiControllers.stateSelector.updateDisplay();
+    isApplyingProfile = false;
+  }
+
+  function refreshGUI() {
+    Object.values(guiControllers).forEach((ctrl) => {
+      if (ctrl && ctrl.updateDisplay) ctrl.updateDisplay();
+    });
+  }
+
+  /* ── Activity presets ── */
+  function applyActivityPreset(mode) {
+    if (mode === "listening") {
+      params.impulseRate = 0.8;
+      params.impulseSpeed = 0.8;
+      params.impulseDecay = 0.6;
+      params.pulseSpeed = 0.8;
+      params.growth = 0.7;
+      params.plasmaVolatility = 0.25;
+      params.plasmaEnergyFlow = 0.4;
+      params.glowIntensity = 0.9;
+      params.neuroPulse = 0.4;
+      params.neuroRotation = 0.01;
+      agentSpeaking = false;
+    } else if (mode === "thinking") {
+      params.impulseRate = 2.5;
+      params.impulseSpeed = 1.4;
+      params.impulseDecay = 0.7;
+      params.pulseSpeed = 1.6;
+      params.growth = 1.2;
+      params.plasmaVolatility = 0.55;
+      params.plasmaEnergyFlow = 0.7;
+      params.glowIntensity = 1.4;
+      params.neuroPulse = 0.8;
+      params.neuroRotation = 0.025;
+      agentSpeaking = false;
+    } else if (mode === "speaking") {
+      params.impulseRate = 4.0;
+      params.impulseSpeed = 2.2;
+      params.impulseDecay = 0.9;
+      params.pulseSpeed = 1.8;
+      params.growth = 1.4;
+      params.plasmaVolatility = 0.65;
+      params.plasmaEnergyFlow = 0.9;
+      params.glowIntensity = 1.8;
+      params.neuroPulse = 1.1;
+      params.neuroRotation = 0.03;
+      params.auraEnabled = true;
+      params.sparksEnabled = true;
+      agentSpeaking = true;
+    } else {
+      // idle
+      agentSpeaking = false;
+    }
+    if (bloomPass) bloomPass.strength = params.glowIntensity;
+    if (impulseMat) {
+      impulseMat.size = params.impulseSize;
+      impulseMat.opacity = params.impulseGlow;
+    }
+    updatePlasmaVisibility();
+    refreshGUI();
+  }
+
+  /* ── GUI setup ── */
+  function setupGUI() {
+    gui = new GUI({ container: guiContainer, title: "CymaticSphere", width: 320 });
+
+    const stateFolder = gui.addFolder("State Presets");
+    guiControllers.stateSelector = stateFolder.add(stateModel, "state", STATE_MAP.reduce((acc, s) => ({ ...acc, [s.label]: s.id }), {})).name("Profile");
+    guiControllers.stateSelector.onChange((val) => {
+      if (isApplyingProfile) return;
+      saveProfile(currentStateId);
+      currentStateId = val;
+      applyProfile(val);
+    });
+    guiControllers.saveBtn = stateFolder.add({ save: () => saveProfile(currentStateId) }, "save").name("Save");
+    guiControllers.resetBtn = stateFolder.add({
+      reset: () => {
+        profiles = {};
+        Object.assign(params, { ...DEFAULT_PARAMS });
+        createNetwork();
+        createPlasma();
+        createNeuroLayer();
+        updateTargets();
+        updatePlasmaVisibility();
+        refreshGUI();
+        profiles[currentStateId] = snapshotState();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ profiles, currentStateId }));
+      },
+    }, "reset").name("Reset All");
+
+    const sceneFolder = gui.addFolder("Geometry");
+    guiControllers.stateMode = sceneFolder.add(params, "state", { "Chaos": 0, "Sphere": 1, "Mandala": 2 }).name("Shape").onChange(updateTargets);
+    guiControllers.morphSpeed = sceneFolder.add(params, "morphSpeed", 0.001, 0.1, 0.001).name("Morph Speed");
+    guiControllers.rotationSpeed = sceneFolder.add(params, "rotationSpeed", 0, 2, 0.01).name("Rotation Speed");
+    guiControllers.pointSize = sceneFolder.add(params, "pointSize", 0.01, 0.2, 0.005).name("Point Size").onChange((v) => { particleMaterial.size = v; });
+    guiControllers.colorInside = sceneFolder.addColor(params, "colorInside").name("Core Color");
+    guiControllers.colorOutside = sceneFolder.addColor(params, "colorOutside").name("Edge Color");
+
+    const cymaticsFolder = gui.addFolder("Cymatics");
+    guiControllers.baseFrequency = cymaticsFolder.add(params, "baseFrequency", 0, 600, 1).name("Base Freq");
+    guiControllers.freqRange = cymaticsFolder.add(params, "freqRange", 0, 1200, 1).name("Sensitivity");
+    guiControllers.cymaticAmplitude = cymaticsFolder.add(params, "cymaticAmplitude", 0, 2.5, 0.01).name("Amplitude");
+    guiControllers.amplitudeJitter = cymaticsFolder.add(params, "amplitudeJitter", 0, 1.5, 0.01).name("Jitter");
+    guiControllers.maxDisplacement = cymaticsFolder.add(params, "maxDisplacement", 0.2, 3, 0.01).name("Max Displace");
+
+    const networkFolder = gui.addFolder("Network");
+    guiControllers.nodeCount = networkFolder.add(params, "nodeCount", 50, 800, 10).name("Nodes").onChange(createNetwork);
+    guiControllers.connectionMaxDist = networkFolder.add(params, "connectionMaxDist", 0.5, 6, 0.1).name("Link Dist").onChange(updateEdges);
+    guiControllers.pulseSpeed = networkFolder.add(params, "pulseSpeed", 0.1, 5, 0.1).name("Pulse Speed");
+    guiControllers.growth = networkFolder.add(params, "growth", 0.2, 2.0, 0.05).name("Growth");
+    guiControllers.networkOpacity = networkFolder.add(params, "networkOpacity", 0, 1, 0.01).name("Opacity").onChange((v) => { if (edges) edges.material.opacity = v; });
+    guiControllers.networkColor = networkFolder.addColor(params, "networkColor").name("Color").onChange(createNetwork);
+
+    const glowFolder = gui.addFolder("Glow");
+    guiControllers.glowIntensity = glowFolder.add(params, "glowIntensity", 0, 5, 0.05).name("Glow");
+    guiControllers.glowOpacity = glowFolder.add(params, "glowOpacity", 0.05, 1, 0.01).name("Alpha").onChange((v) => {
+      particleMaterial.opacity = v;
+      if (nodes) nodes.material.opacity = Math.min(v + 0.2, 1);
+    });
+
+    const plasmaFolder = gui.addFolder("Plasma");
+    guiControllers.plasmaBreathDepth = plasmaFolder.add(params, "plasmaBreathDepth", 0, 1, 0.01).name("Breath");
+    guiControllers.plasmaEnergyFlow = plasmaFolder.add(params, "plasmaEnergyFlow", 0, 1, 0.01).name("Energy");
+    guiControllers.plasmaVolatility = plasmaFolder.add(params, "plasmaVolatility", 0, 1, 0.01).name("Volatility");
+    guiControllers.plasmaColor1 = plasmaFolder.addColor(params, "plasmaColor1").name("Color 1");
+    guiControllers.plasmaColor2 = plasmaFolder.addColor(params, "plasmaColor2").name("Color 2");
+    guiControllers.plasmaColor3 = plasmaFolder.addColor(params, "plasmaColor3").name("Color 3");
+
+    const impulsesFolder = gui.addFolder("Impulses");
+    guiControllers.impulseRate = impulsesFolder.add(params, "impulseRate", 0, 10, 0.1).name("Rate");
+    guiControllers.impulseSpeed = impulsesFolder.add(params, "impulseSpeed", 0.2, 5, 0.1).name("Speed");
+    guiControllers.impulseDecay = impulsesFolder.add(params, "impulseDecay", 0.1, 3, 0.05).name("Decay");
+    guiControllers.impulseSize = impulsesFolder.add(params, "impulseSize", 0.01, 0.2, 0.005).name("Size").onChange((v) => { if (impulseMat) impulseMat.size = v; });
+    guiControllers.impulseGlow = impulsesFolder.add(params, "impulseGlow", 0.1, 2, 0.05).name("Glow").onChange((v) => { if (impulseMat) impulseMat.opacity = v; });
+    guiControllers.impulseColorA = impulsesFolder.addColor(params, "impulseColorA").name("Color A");
+    guiControllers.impulseColorB = impulsesFolder.addColor(params, "impulseColorB").name("Color B");
+
+    const activityFolder = gui.addFolder("Activity Modes");
+    activityFolder.add({ listen: () => applyActivityPreset("listening") }, "listen").name("Listening");
+    activityFolder.add({ think: () => applyActivityPreset("thinking") }, "think").name("Thinking");
+    activityFolder.add({ speak: () => applyActivityPreset("speaking") }, "speak").name("Speaking");
+    activityFolder.add({ idle: () => applyActivityPreset("idle") }, "idle").name("Idle");
+  }
+
+  /* ── Animation loop ── */
+  function animate() {
+    if (disposed) return;
+    animFrameId = requestAnimationFrame(animate);
+
+    const time = performance.now() * 0.001;
+    // Use external volume instead of mic
+    volume = THREE.MathUtils.lerp(volume, externalVolume, params.volumeSmooth);
+    const vol = volume;
+    const dynamicFreq = params.baseFrequency + vol * params.freqRange;
+    const delta = Math.min(0.05, time - prevTime);
+    prevTime = time;
+
+    // FPS counter
+    frameCount++;
+    const nowMs = performance.now();
+    if (nowMs - lastFpsTime >= 1000) {
+      fps = Math.round((frameCount * 1000) / (nowMs - lastFpsTime));
+      frameCount = 0;
+      lastFpsTime = nowMs;
+    }
+
+    // Agent speaking simulation
+    if (agentSpeaking) {
+      const t = performance.now();
+      const simVolume = 0.25 + Math.sin(t * 0.004) * 0.12 + Math.sin(t * 0.011) * 0.06 + Math.sin(t * 0.007) * 0.08;
+      volume = Math.max(volume, simVolume);
+    }
+
+    // Particles
+    if (params.particlesEnabled && particles) {
+      particles.visible = true;
+      const posAttr = particleGeometry.attributes.position;
+      const colorAttr = particleGeometry.attributes.color;
+      const insideColor = new THREE.Color(params.colorInside);
+      const outsideColor = new THREE.Color(params.colorOutside);
+      const maxR = 5 * (1 + params.maxDisplacement);
+      const count = params.particleCount;
+
+      for (let i = 0; i < count; i++) {
+        const i3 = i * 3;
+        const px = posAttr.array[i3];
+        const py = posAttr.array[i3 + 1];
+        const pz = posAttr.array[i3 + 2];
+        let tx = targetPositions[i3];
+        let ty = targetPositions[i3 + 1];
+        let tz = targetPositions[i3 + 2];
+
+        const v = new THREE.Vector3(tx, ty, tz);
+        const n = v.length() > 0.0001 ? v.clone().normalize() : new THREE.Vector3(0, 1, 0);
+        const f = dynamicFreq * 0.12;
+        const vib = Math.sin(n.x * f + time) * Math.sin(n.y * f * 0.6 + time * 0.5) * Math.sin(n.z * f * 0.4);
+        const amp = params.cymaticAmplitude + Math.sin(time * 3 + i) * params.amplitudeJitter * volume;
+        const radial = 1 + Math.abs(vib) * amp;
+        tx = THREE.MathUtils.clamp(n.x * 5 * radial, -maxR, maxR);
+        ty = THREE.MathUtils.clamp(n.y * 5 * radial, -maxR, maxR);
+        tz = THREE.MathUtils.clamp(n.z * 5 * radial, -maxR, maxR);
+
+        posAttr.array[i3] += (tx - px) * params.morphSpeed;
+        posAttr.array[i3 + 1] += (ty - py) * params.morphSpeed;
+        posAttr.array[i3 + 2] += (tz - pz) * params.morphSpeed;
+
+        const d = Math.sqrt(
+          posAttr.array[i3] ** 2 +
+          posAttr.array[i3 + 1] ** 2 +
+          posAttr.array[i3 + 2] ** 2,
+        );
+        const rawT = THREE.MathUtils.clamp((d - 0.5) / (maxR - 0.5), 0, 1);
+        const t2 = Math.pow(rawT, 1.2);
+        const c = new THREE.Color();
+        c.copy(insideColor).lerpHSL(outsideColor, t2);
+        colorAttr.array[i3] = c.r;
+        colorAttr.array[i3 + 1] = c.g;
+        colorAttr.array[i3 + 2] = c.b;
+      }
+      posAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
+      particles.rotation.y += 0.002 * params.rotationSpeed;
+      particles.rotation.x += 0.001 * params.rotationSpeed;
+    } else if (particles) {
+      particles.visible = false;
+    }
+
+    // Network
+    if (params.networkEnabled && params.showNetwork && nodes && edges && nodeGeometry && edgeGeometry) {
+      const nodePos = nodeGeometry.attributes.position.array;
+      const edgePos = edgeGeometry.attributes.position.array;
+      let cursor = 0;
+      for (let i = 0; i < nodeData.length; i++) {
+        const node = nodeData[i];
+        const shift = Math.sin(time * params.pulseSpeed + node.phase) * 0.4 * params.growth;
+        node.pos.copy(node.origin).multiplyScalar(1 + shift * 0.05 + volume * 0.2);
+        nodePos[i * 3] = node.pos.x;
+        nodePos[i * 3 + 1] = node.pos.y;
+        nodePos[i * 3 + 2] = node.pos.z;
+      }
+      for (let i = 0; i < nodeData.length; i++) {
+        for (let j = i + 1; j < nodeData.length; j++) {
+          const d = nodeData[i].origin.distanceTo(nodeData[j].origin);
+          if (d < params.connectionMaxDist) {
+            edgePos[cursor++] = nodeData[i].pos.x;
+            edgePos[cursor++] = nodeData[i].pos.y;
+            edgePos[cursor++] = nodeData[i].pos.z;
+            edgePos[cursor++] = nodeData[j].pos.x;
+            edgePos[cursor++] = nodeData[j].pos.y;
+            edgePos[cursor++] = nodeData[j].pos.z;
+          }
+        }
+      }
+      nodeGeometry.attributes.position.needsUpdate = true;
+      edgeGeometry.attributes.position.needsUpdate = true;
+      nodes.visible = true;
+      edges.visible = true;
+      updateImpulses(delta);
+    } else if (nodes && edges) {
+      nodes.visible = false;
+      edges.visible = false;
+      if (impulsePoints) impulsePoints.visible = false;
+    }
+
+    // Plasma
+    if (params.plasmaEnabled && plasma.membrane) {
+      plasma.membrane.visible = true;
+      updatePlasmaUniforms(time);
+
+      // Meridians
+      if (plasma.meridianGroup && plasma.meridianGeoms.length) {
+        plasma.meridianGroup.visible = params.meridiansEnabled;
+        if (params.meridiansEnabled) {
+          for (let mIdx = 0; mIdx < plasma.meridianGeoms.length; mIdx++) {
+            const geom = plasma.meridianGeoms[mIdx];
+            const points = plasma.meridianGroup.children[mIdx];
+            const posAttr = geom.attributes.position;
+            const colAttr = geom.attributes.color;
+            const particlesPerMeridian = posAttr.count;
+            for (let i = 0; i < particlesPerMeridian; i++) {
+              const baseT = i / particlesPerMeridian;
+              const flowT = (baseT + time * params.plasmaEnergyFlow * 0.5 + points.userData.offset) % 1;
+              const phi = flowT * Math.PI;
+              const theta = points.userData.baseAngle + Math.sin(flowT * Math.PI * 2) * 0.3;
+              const breath = Math.sin(time * 1.2) * 0.5 + 0.5;
+              const r = 1.08 + breath * params.plasmaBreathDepth * 0.1;
+              posAttr.setXYZ(i,
+                r * Math.sin(phi) * Math.cos(theta),
+                r * Math.cos(phi),
+                r * Math.sin(phi) * Math.sin(theta),
+              );
+              const intensity = Math.sin(flowT * Math.PI);
+              colAttr.setXYZ(i, 1.0 * intensity, (0.4 + flowT * 0.4) * intensity, 0.2 * intensity);
+            }
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+          }
+        }
+      }
+
+      // Heart
+      if (plasma.heart) {
+        plasma.heart.visible = params.heartEnabled;
+        if (params.heartEnabled) {
+          const beat = Math.pow(Math.sin(time * 4) * 0.5 + 0.5, 8);
+          plasma.heart.scale.setScalar(0.3 + beat * 0.1);
+        }
+      }
+
+      // Aura
+      if (plasma.aura) {
+        plasma.aura.visible = params.auraEnabled;
+        if (params.auraEnabled) {
+          const breath = Math.sin(time * 1.2) * 0.5 + 0.5;
+          plasma.aura.scale.setScalar(1.4 + breath * params.plasmaBreathDepth * 0.1);
+        }
+      }
+
+      // Sparks
+      if (plasma.sparks && plasma.sparkGeom && plasma.sparkLifetimes && plasma.sparkVelocities) {
+        plasma.sparks.visible = params.sparksEnabled;
+        if (params.sparksEnabled) {
+          const sparkPosAttr = plasma.sparkGeom.attributes.position;
+          const sparkColAttr = plasma.sparkGeom.attributes.color;
+          const sparkCount = sparkPosAttr.count;
+          for (let i = 0; i < sparkCount; i++) {
+            plasma.sparkLifetimes[i] -= 0.005 + params.plasmaVolatility * 0.01;
+            if (plasma.sparkLifetimes[i] <= 0) {
+              plasma.sparks.userData.resetSpark(i);
+              continue;
+            }
+            sparkPosAttr.array[i * 3] += plasma.sparkVelocities[i * 3];
+            sparkPosAttr.array[i * 3 + 1] += plasma.sparkVelocities[i * 3 + 1];
+            sparkPosAttr.array[i * 3 + 2] += plasma.sparkVelocities[i * 3 + 2];
+            const life = plasma.sparkLifetimes[i];
+            sparkColAttr.setXYZ(i,
+              sparkColAttr.array[i * 3] * life,
+              sparkColAttr.array[i * 3 + 1] * life,
+              sparkColAttr.array[i * 3 + 2] * life,
+            );
+          }
+          sparkPosAttr.needsUpdate = true;
+          sparkColAttr.needsUpdate = true;
+        }
+      }
+    } else if (plasma.membrane) {
+      plasma.membrane.visible = false;
+      if (plasma.meridianGroup) plasma.meridianGroup.visible = false;
+      if (plasma.heart) plasma.heart.visible = false;
+      if (plasma.aura) plasma.aura.visible = false;
+      if (plasma.sparks) plasma.sparks.visible = false;
+    }
+
+    // Neuro
+    if (neuro.group) {
+      if (params.neuroEnabled) {
+        neuro.group.visible = true;
+        neuro.group.rotation.y += params.neuroRotation + volume * 0.05;
+        if (neuro.nodes) {
+          const tPulse = (Math.sin(time * 2.5) * 0.5 + 0.5) * params.neuroPulse;
+          neuro.nodes.material.opacity = 0.15 + tPulse * 0.25 + volume * 0.3;
+        }
+        if (neuro.edges) {
+          neuro.edges.material.opacity = 0.08 + params.neuroPulse * 0.1 + volume * 0.1;
+        }
+      } else {
+        neuro.group.visible = false;
+      }
+    }
+
+    // Orbits
+    if (orbits.group) {
+      if (params.orbitsEnabled) {
+        orbits.group.visible = true;
+        orbits.rings.forEach((ring) => {
+          ring.mesh.rotation.y += ring.speed * params.orbitSpeed;
+          const colAttr = ring.mesh.geometry.attributes.color;
+          const pCount = ring.phases.length;
+          for (let i = 0; i < pCount; i++) {
+            const flow = Math.sin(time * 3 + ring.phases[i] + i * 0.05);
+            const intensity = (0.3 + flow * 0.7) * (1 + volume * 2);
+            const baseColor = new THREE.Color(params.orbitColor);
+            colAttr.setXYZ(i, baseColor.r * intensity, baseColor.g * intensity, baseColor.b * intensity);
+          }
+          colAttr.needsUpdate = true;
+        });
+      } else {
+        orbits.group.visible = false;
+      }
+    }
+
+    // Bloom disabled for transparency — adjust particle opacity instead
+    const glowBoost = 0.5 + volume * 0.5;
+    if (particleMaterial) particleMaterial.opacity = params.glowOpacity * glowBoost;
+
+    // Direct render — no bloom compositor (preserves transparency)
+    renderer.render(scene, camera);
+  }
+
+  /* ── Public API ── */
+  return {
+    getParams: () => ({ ...params }),
+
+    setAudioLevel(level) {
+      externalVolume = Math.max(0, Math.min(1, level));
+    },
+
+    applyActivityPreset,
+
+    init() {
+      scene = new THREE.Scene();
+      scene.background = null;  // transparent
+      camera = new THREE.PerspectiveCamera(65, 1, 0.1, 200);
+      camera.position.set(0, 0, params.cameraDistance);
+      camera.lookAt(0, 0, 0);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setSize(ORB_SIZE, ORB_SIZE);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      // NO EffectComposer — bloom breaks transparency
+      // Instead we use additive blending on materials for glow effect
+      composer = null;
+      bloomPass = null;
+
+      createParticles();
+      createNetwork();
+      initImpulseSystem();
+      createPlasma();
+      createNeuroLayer();
+      createOrbits();
+
+      setupGUI();
+      loadProfiles();
+      applyProfile(currentStateId);
+
+      animate();
+    },
+
+    dispose() {
+      disposed = true;
+      cancelAnimationFrame(animFrameId);
+      if (gui) {
+        try { gui.destroy(); } catch { /* */ }
+      }
+      if (renderer) {
+        renderer.dispose();
+        renderer.domElement.remove();
+      }
+    },
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BOOTSTRAP
+   ═══════════════════════════════════════════════════════════════ */
+const container = document.getElementById('orb-container');
+const guiContainer = document.getElementById('gui-container');
+const engine = createEngine(container, guiContainer);
+engine.init();
+
+let isActive = true;
+container.style.display = 'block';
+
+/* ── Drag logic ── */
+let isDragging = false;
+let dragStartX = 0, dragStartY = 0;
+let containerStartLeft = 0, containerStartBottom = 0;
+
+container.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  const rect = container.getBoundingClientRect();
+  containerStartLeft = rect.left;
+  containerStartBottom = window.innerHeight - rect.bottom;
+  container.classList.add('dragging');
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  container.style.left = (containerStartLeft + dx) + 'px';
+  container.style.bottom = (containerStartBottom - dy) + 'px';
+});
+
+window.addEventListener('mouseup', () => {
+  if (isDragging) {
+    isDragging = false;
+    container.classList.remove('dragging');
+  }
+});
+
+/* ── Window APIs ── */
+window.setAudioLevel = (level) => {
+  engine.setAudioLevel(level);
+};
+
+window.setActive = (active) => {
+  // Orb is ALWAYS visible — setActive just changes listening state
+  isActive = true;  // always render
+  if (active) {
+    engine.applyActivityPreset('listening');
+  } else {
+    engine.applyActivityPreset('idle');
+  }
+};
+
+window.setState = (state) => {
+  engine.applyActivityPreset(state);
+};
+
+window.setProcessing = (on) => {
+  if (on) {
+    engine.applyActivityPreset('thinking');
+  } else {
+    engine.applyActivityPreset('idle');
+  }
+};
+
+window.toggleGui = () => {
+  const g = guiContainer;
+  g.style.display = g.style.display === 'none' ? 'block' : 'none';
+};
+</script>
+</body>
+</html>

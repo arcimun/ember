@@ -1,0 +1,20 @@
+# Build
+.build/
+*.app
+DictationService.app/
+
+# macOS
+.DS_Store
+
+# Dev-only
+benchmark-results/
+concepts/
+
+# Secrets
+*.env
+!.env.example
+
+# IDE
+.claude/
+.vscode/
+.idea/
