@@ -73,7 +73,7 @@ DICTATION_LANGUAGE=ru
 
 On first launch, if no API key is found, Ember shows a dialog asking for the Groq key.
 
-API keys loaded in order from: `config.env` → `~/.openclaw/.env` → `~/Dev/arcimun-voice/.env`. First non-empty value wins.
+API keys loaded in order from: `~/.config/ember/config.env` → `~/.openclaw/.env`. First non-empty value wins.
 
 ## Overlay API (Swift → JS)
 
@@ -123,7 +123,7 @@ On tag push (`v*`), `.github/workflows/release.yml`:
 
 ## Known Quirks
 
-- Audio recording uses `/opt/homebrew/bin/rec` (hardcoded Homebrew ARM path)
+- Audio recording uses SoX `rec` — auto-detected via `/opt/homebrew/bin/rec`, `/usr/local/bin/rec`, or `which rec`
 - LLM hallucination guard: if corrected text >3x raw length, falls back to raw
 
 ## History
