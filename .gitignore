@@ -2,6 +2,7 @@
 .build/
 *.app
 DictationService.app/
+dist/
 
 # macOS
 .DS_Store

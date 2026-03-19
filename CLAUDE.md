@@ -1,24 +1,31 @@
-# CLAUDE.md
+# CLAUDE.md — Ember
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+macOS voice-to-text app with plasma overlay and auto-paste. Version 1.0.0.
 
-## What This Is
-
-macOS voice-to-text app: global hotkey → record → Groq Whisper STT → Groq LLM grammar fix → auto-paste. Menu bar only (LSUIElement), no dock icon. Plasma/orb overlay reacts to voice in real-time.
-
-## Build & Run
+## Quick Start
 
 ```bash
-# Build only (dev cycle)
-swift build -c release
-
-# Build + install to /Applications/ + sign ad-hoc
+# Build + install to /Applications/
 bash install.sh
 
 # After each rebuild (CDHash changes → macOS revokes permission):
-tccutil reset Accessibility com.arcimun.dictation-service
-open /Applications/DictationService.app
+tccutil reset Accessibility com.arcimun.ember
+open /Applications/Ember.app
 # Then re-add in System Settings → Accessibility
+```
+
+### Install Methods
+
+```bash
+# Homebrew
+brew install --cask arcimun/tap/ember
+
+# DMG
+bash scripts/build-dmg.sh 1.0.0
+# → dist/Ember-1.0.0.dmg
+
+# From source
+bash install.sh
 ```
 
 Without Accessibility: everything works except auto-paste (Cmd+V). Use manual paste.
@@ -27,18 +34,19 @@ Without Accessibility: everything works except auto-paste (Cmd+V). Use manual pa
 
 ## Architecture
 
-Single-file Swift app (`Sources/main.swift`, ~690 lines) + HTML overlay files.
+Single-file Swift app (`Sources/main.swift`) + HTML overlay.
 
 ```
 main.swift (everything)
-├── Config          — loads .env from 3 paths (config.env, .openclaw, arcimun-voice)
-├── PlasmaOverlayWindow — fullscreen transparent WKWebView, loads HTML themes
+├── Config              — loads .env (config.env, .openclaw, arcimun-voice)
+├── PlasmaOverlayWindow — fullscreen transparent WKWebView, loads overlay.html
 ├── startRecording()    — SoX `rec` → WAV file + parallel RMS monitor → JS audio levels
 ├── stopRecording()     — kill rec → Groq Whisper STT → Groq LLM fix → clipboard + Cmd+V
 ├── cancelRecording()   — kill rec, save partial to clipboard
 ├── Carbon hotkeys      — RegisterEventHotKey (tilde=toggle, escape=cancel)
 ├── NSEvent fallback    — if Carbon registration fails
-└── AppDelegate         — menu bar, theme switching, history
+├── Sparkle updater     — SUUpdater via SPM, checks appcast.xml
+└── AppDelegate         — menu bar (SF Symbols), first-run API key dialog, history
 ```
 
 **Pipeline:** `` ` `` → record WAV → Groq Whisper (`whisper-large-v3-turbo`) ~0.7s → Groq LLM (`llama-3.3-70b-versatile`) ~1s → clipboard + auto-paste
@@ -47,23 +55,23 @@ main.swift (everything)
 
 | File | What |
 |------|------|
-| `Sources/main.swift` | Entire app: delegate, overlay, recording, STT, LLM, hotkeys |
+| `Sources/main.swift` | Entire app: delegate, overlay, recording, STT, LLM, hotkeys, Sparkle |
 | `Resources/overlay.html` | Violet Flame theme — WebGL2 GLSL fragment shader |
-| `Resources/overlay-orb.html` | Arcimun Orb — Three.js CymaticSphere (10K particles, plasma) |
 | `install.sh` | Build + sign + copy to /Applications/ |
-| `Package.swift` | SPM config (macOS 13+, only `overlay.html` in resources) |
-
-**Note:** `overlay-orb.html` is NOT in Package.swift resources — it's loaded from `~/Dev/dictation-service/Resources/` at runtime via fallback path. Same for `overlay.html` when running from Xcode/SPM (Bundle.main fallback).
+| `scripts/build-dmg.sh` | Build + create distributable DMG |
+| `Package.swift` | SPM config (macOS 14+, Sparkle dependency) |
+| `.github/workflows/release.yml` | CI: build + DMG + GitHub Release on tag push |
 
 ## Config
 
-File: `~/.config/dictation-service/config.env`
+File: `~/.config/ember/config.env`
 
 ```env
-DICTATION_LANGUAGE=ru
 GROQ_API_KEY=gsk_...
-DEEPGRAM_API_KEY=...   # legacy key name, still loaded but STT uses Groq now
+DICTATION_LANGUAGE=ru
 ```
+
+On first launch, if no API key is found, Ember shows a dialog asking for the Groq key.
 
 API keys loaded in order from: `config.env` → `~/.openclaw/.env` → `~/Dev/arcimun-voice/.env`. First non-empty value wins.
 
@@ -73,8 +81,6 @@ API keys loaded in order from: `config.env` → `~/.openclaw/.env` → `~/Dev/ar
 window.setAudioLevel(float)  // 0-1, called 30fps from Timer
 window.setActive(bool)       // start/stop listening animation
 window.setProcessing(bool)   // thinking state (called between STT and paste)
-window.setState(string)      // "idle"/"listening"/"thinking"/"speaking" (orb only)
-window.toggleGui()           // show/hide lil-gui settings panel (orb only)
 ```
 
 ## Hotkeys
@@ -85,35 +91,55 @@ window.toggleGui()           // show/hide lil-gui settings panel (orb only)
 | `Escape` (keycode 53) | Cancel recording, save partial to clipboard | No (Carbon) |
 | Auto-paste (CGEvent Cmd+V) | After transcription completes | Yes |
 
-## Themes
+## Auto-Update (Sparkle 2)
 
-Switch via menu bar → Theme. Two actually implemented:
+Ember uses [Sparkle](https://sparkle-project.org/) for automatic updates.
 
-| Theme | File | Behavior |
-|-------|------|----------|
-| Violet Flame | `overlay.html` | GLSL shader on screen edges, appears/disappears with recording |
-| Arcimun Orb | `overlay-orb.html` | 3D sphere always visible, state-driven (idle/listening/thinking) |
+- Feed URL: `https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml`
+- Checks automatically on launch
+- Menu bar → "Check for Updates..." triggers manual check
+- `SUPublicEDKey` in Info.plist for EdDSA signature verification
 
-"Neon Circuit" and "Minimal" are in the menu but not implemented — they load `overlay.html` as fallback.
+## Distribution
+
+### Creating a release
+
+```bash
+# Build DMG locally
+bash scripts/build-dmg.sh 1.0.0
+
+# Or push a tag → GitHub Actions builds + publishes
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### GitHub Actions
+
+On tag push (`v*`), `.github/workflows/release.yml`:
+1. Builds on `macos-14` runner
+2. Assembles Ember.app bundle
+3. Creates DMG via `create-dmg`
+4. Publishes GitHub Release with DMG attached
 
 ## Known Quirks
 
-- `saveHistory()` writes `"provider": "deepgram-nova-3"` but actual provider is Groq Whisper — hardcoded string not updated
 - Audio recording uses `/opt/homebrew/bin/rec` (hardcoded Homebrew ARM path)
 - LLM hallucination guard: if corrected text >3x raw length, falls back to raw
-- Menu bar shows "Neon Circuit" and "Minimal" themes that don't have dedicated HTML files
 
 ## History
 
-Sessions saved as JSON in `~/.config/dictation-service/history/` (filename: `YYYY-MM-DD_HH-mm-ss.json`).
+Sessions saved as JSON in `~/.config/ember/history/` (filename: `YYYY-MM-DD_HH-mm-ss.json`).
 
 ## Logs
 
-`~/Library/Logs/DictationService.log`
+`~/Library/Logs/Ember.log`
 
 ## Project Metadata
 
-- Bundle ID: `com.arcimun.dictation-service`
-- Swift Package Manager, swift-tools-version 5.9, macOS 13+
+- Bundle ID: `com.arcimun.ember`
+- Version: 1.0.0
+- Swift Package Manager, swift-tools-version 5.9, macOS 14+
 - Ad-hoc signed (`codesign --sign -`)
-- CymaticSphere orb converted from `/Users/ihyart/Dev/arcimun-voice-web/app/CymaticSphere.tsx`
+- Sparkle 2 for auto-updates
+- License: MIT
+- Repo: `github.com/arcimun/ember`

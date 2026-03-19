@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build Ember
+        run: swift build -c release
+
+      - name: Assemble app bundle
+        env:
+          APP_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          mkdir -p Ember.app/Contents/MacOS
+          mkdir -p Ember.app/Contents/Resources
+          cp .build/release/Ember Ember.app/Contents/MacOS/
+          cp Resources/overlay.html Ember.app/Contents/Resources/ || true
+          cat > Ember.app/Contents/Info.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>Ember</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.arcimun.ember</string>
+              <key>CFBundleName</key>
+              <string>Ember</string>
+              <key>CFBundleVersion</key>
+              <string>${APP_VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${APP_VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>LSMinimumSystemVersion</key>
+              <string>14.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSMicrophoneUsageDescription</key>
+              <string>Ember needs microphone access for voice transcription.</string>
+              <key>SUFeedURL</key>
+              <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
+              <key>SUEnableAutomaticChecks</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Sign app
+        run: codesign --force --sign - --identifier com.arcimun.ember Ember.app
+
+      - name: Create DMG
+        env:
+          APP_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          brew install create-dmg
+          mkdir -p staging
+          cp -r Ember.app staging/
+          create-dmg \
+            --volname "Ember" \
+            --window-size 500 300 \
+            --icon-size 100 \
+            --app-drop-link 380 150 \
+            --icon "Ember.app" 120 150 \
+            --no-internet-enable \
+            "Ember-${APP_VERSION}.dmg" \
+            staging/ || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "Ember-*.dmg"
+          generate_release_notes: true
