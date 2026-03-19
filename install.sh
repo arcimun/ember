@@ -11,6 +11,7 @@ swift build -c release 2>&1
 echo "Installing to $APP..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Ember "$APP/Contents/MacOS/Ember"
+cp Resources/overlay.html "$APP/Contents/Resources/" 2>/dev/null || true
 
 cat > "$APP/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
