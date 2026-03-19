@@ -55,7 +55,68 @@ struct Config {
     }
 }
 
-let config = Config.load()
+var config = Config.load()
+
+// ─── First-Run API Key Dialog ──────────────────────────────────
+func showApiKeyDialog() {
+    let alert = NSAlert()
+    alert.messageText = "Welcome to Ember"
+    alert.informativeText = "Enter your Groq API key to get started.\nGet a free key at console.groq.com"
+    alert.alertStyle = .informational
+
+    let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+    inputField.placeholderString = "gsk_..."
+    alert.accessoryView = inputField
+
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Get API Key")
+    alert.addButton(withTitle: "Skip")
+
+    let response = alert.runModal()
+
+    switch response {
+    case .alertFirstButtonReturn:
+        // Save
+        let key = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            log("⚠️ Empty API key — skipped")
+            return
+        }
+        let configDir = NSString(string: "~/.config/ember").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        let configPath = (configDir as NSString).appendingPathComponent("config.env")
+        // Append or create config file
+        var contents = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        if contents.contains("GROQ_API_KEY=") {
+            // Replace existing key
+            let lines = contents.components(separatedBy: .newlines).map { line -> String in
+                if line.trimmingCharacters(in: .whitespaces).hasPrefix("GROQ_API_KEY=") {
+                    return "GROQ_API_KEY=\(key)"
+                }
+                return line
+            }
+            contents = lines.joined(separator: "\n")
+        } else {
+            if !contents.isEmpty && !contents.hasSuffix("\n") { contents += "\n" }
+            contents += "GROQ_API_KEY=\(key)\n"
+        }
+        try? contents.write(toFile: configPath, atomically: true, encoding: .utf8)
+        config = Config.load()
+        log("✅ API key saved to \(configPath)")
+
+    case .alertSecondButtonReturn:
+        // Get API Key — open browser, then re-show dialog
+        if let url = URL(string: "https://console.groq.com/keys") {
+            NSWorkspace.shared.open(url)
+        }
+        showApiKeyDialog()
+
+    default:
+        // Skip
+        log("⚠️ API key dialog skipped")
+    }
+}
+
 let historyDir: String = {
     let p = NSString(string: "~/.config/ember/history").expandingTildeInPath
     try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true)
@@ -549,9 +610,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             log("✅ Accessibility granted")
         }
 
+        // First-run: prompt for API key if missing
+        if config.groqKey.isEmpty {
+            showApiKeyDialog()
+        }
+
         // Menu bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🎤"
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
+        }
 
         toggleMenuItem = NSMenuItem(title: "Start Recording (`)", action: #selector(toggleRecording), keyEquivalent: "")
         toggleMenuItem.target = self
@@ -573,7 +641,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setRecordingState(_ recording: Bool) {
         DispatchQueue.main.async { [self] in
-            statusItem.button?.title = recording ? "🔴" : "🎤"
+            if let button = statusItem.button {
+                if recording {
+                    button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording")
+                } else {
+                    button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
+                }
+            }
             toggleMenuItem.title = recording ? "Stop Recording (`)" : "Start Recording (`)"
         }
     }
