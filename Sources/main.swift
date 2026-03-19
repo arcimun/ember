@@ -4,6 +4,7 @@ import AudioToolbox
 import QuartzCore
 import Carbon.HIToolbox
 import WebKit
+import Sparkle
 
 // ═══════════════════════════════════════════════════════════════════
 //  Ember v1.0.0 — Voice-to-text for macOS
@@ -594,6 +595,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var toggleMenuItem: NSMenuItem!
     var overlayWindow: PlasmaOverlayWindow?
+    var updaterController: SPUStandardUpdaterController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("🎤 Ember v1.0.0 starting...")
@@ -615,6 +617,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showApiKeyDialog()
         }
 
+        // Sparkle auto-updater
+        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+
         // Menu bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -626,6 +631,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(toggleMenuItem)
         menu.addItem(.separator())
+        let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+        updateItem.target = updaterController
+        menu.addItem(updateItem)
         let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"); hi.target = self; menu.addItem(hi)
         menu.addItem(.separator())
         let qi = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"); qi.target = self; menu.addItem(qi)

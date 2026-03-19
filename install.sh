@@ -39,6 +39,12 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Ember needs microphone access for speech transcription.</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string></string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>
 EOF
