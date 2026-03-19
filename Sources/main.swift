@@ -618,7 +618,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Sparkle auto-updater
-        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
         // Menu bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
