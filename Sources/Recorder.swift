@@ -41,33 +41,18 @@ class Recorder {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Record in mic's native format, write directly — no conversion in tap callback.
-        // AVAudioFile handles format conversion to 16kHz/mono/Int16 automatically via its
-        // processingFormat (input) vs fileFormat (output) when writing.
-        let wavSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
-
+        // Record in mic's native format (e.g. 48kHz Float32).
+        // Convert to 16kHz mono Int16 WAV after recording stops (via afconvert).
+        let nativePath = audioFilePath + ".native.caf"
         do {
-            // AVAudioFile with processingFormat=inputFormat writes the tap buffers directly,
-            // and internally converts to the file's target format (16kHz mono Int16).
-            audioFile = try AVAudioFile(forWriting: URL(fileURLWithPath: audioFilePath),
-                                        settings: wavSettings,
-                                        commonFormat: inputFormat.commonFormat,
-                                        interleaved: inputFormat.isInterleaved)
+            audioFile = try AVAudioFile(forWriting: URL(fileURLWithPath: nativePath),
+                                        settings: inputFormat.settings)
         } catch {
-            log("❌ Cannot create WAV file: \(error)")
+            log("❌ Cannot create audio file: \(error)")
             isRecording = false
             return
         }
 
-        // Install tap — write buffers directly, no manual conversion needed
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
 
@@ -83,8 +68,7 @@ class Recorder {
                 }
             }
 
-            // Write buffer to file on background queue
-            // AVAudioFile handles format conversion internally (48kHz float → 16kHz Int16)
+            // Write buffer to file on background queue (native format, no conversion)
             self.writeQueue.async { [weak self] in
                 try? self?.audioFile?.write(from: buffer)
             }
@@ -109,6 +93,17 @@ class Recorder {
         stopEngine()
         delegate?.recorderDidStopRecording()
         delegate?.recorderDidStartProcessing()
+
+        // Convert native format (48kHz float) → 16kHz mono Int16 WAV for Groq
+        let nativePath = audioFilePath + ".native.caf"
+        if FileManager.default.fileExists(atPath: nativePath) {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+            task.arguments = [nativePath, audioFilePath, "-f", "WAVE", "-d", "LEI16@16000", "-c", "1"]
+            try? task.run()
+            task.waitUntilExit()
+            try? FileManager.default.removeItem(atPath: nativePath)
+        }
 
         // Send WAV to Groq Whisper API
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
@@ -160,6 +155,7 @@ class Recorder {
         log("❌ Cancelled"); AudioServicesPlaySystemSound(1114)
         stopEngine()
         try? FileManager.default.removeItem(atPath: audioFilePath)
+        try? FileManager.default.removeItem(atPath: audioFilePath + ".native.caf")
 
         // Save to clipboard (even on cancel)
         if !currentText.isEmpty {
