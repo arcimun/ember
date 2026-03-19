@@ -353,6 +353,7 @@ func stopRecording() {
     log("⏹️ Stopping..."); AudioServicesPlaySystemSound(1114)
     killRec()
     appDelegateRef?.setRecordingState(false)
+    appDelegateRef?.setProcessingState(true)
 
     // Switch overlay to "processing" mode (orange) before hiding
     appDelegateRef?.overlayWindow?.webView.evaluateJavaScript("window.setProcessing(true)", completionHandler: nil)
@@ -368,6 +369,7 @@ func stopRecording() {
         guard trimmed.count > 2 else {
             log("⚠️ No speech detected")
             DispatchQueue.main.async {
+                appDelegateRef?.setProcessingState(false)
                 appDelegateRef?.overlayWindow?.webView.evaluateJavaScript("window.setProcessing(false)", completionHandler: nil)
                 appDelegateRef?.overlayWindow?.hide()
             }
@@ -385,6 +387,7 @@ func stopRecording() {
 
             DispatchQueue.main.async {
                 // Hide overlay (processing complete)
+                appDelegateRef?.setProcessingState(false)
                 appDelegateRef?.overlayWindow?.webView.evaluateJavaScript("window.setProcessing(false)", completionHandler: nil)
                 appDelegateRef?.overlayWindow?.hide()
 
@@ -657,6 +660,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             toggleMenuItem.title = recording ? "Stop Recording (`)" : "Start Recording (`)"
+        }
+    }
+
+    func setProcessingState(_ processing: Bool) {
+        DispatchQueue.main.async { [self] in
+            if let button = statusItem.button {
+                if processing {
+                    button.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Processing")
+                } else {
+                    button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
+                }
+            }
         }
     }
 
