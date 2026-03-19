@@ -30,7 +30,7 @@ bash install.sh
 
 Without Accessibility: everything works except auto-paste (Cmd+V). Use manual paste.
 
-**Prerequisites:** SoX (`brew install sox`) — `rec` binary used for audio recording and RMS monitoring.
+**Prerequisites:** None — audio recording uses native AVAudioEngine (no external dependencies).
 
 ## Architecture
 
@@ -40,9 +40,9 @@ Single-file Swift app (`Sources/main.swift`) + HTML overlay.
 main.swift (everything)
 ├── Config              — loads .env (config.env, .openclaw, arcimun-voice)
 ├── PlasmaOverlayWindow — fullscreen transparent WKWebView, loads overlay.html
-├── startRecording()    — SoX `rec` → WAV file + parallel RMS monitor → JS audio levels
-├── stopRecording()     — kill rec → Groq Whisper STT → Groq LLM fix → clipboard + Cmd+V
-├── cancelRecording()   — kill rec, save partial to clipboard
+├── startRecording()    — AVAudioEngine → WAV file + RMS monitor → JS audio levels
+├── stopRecording()     — stop engine → Groq Whisper STT → Groq LLM fix → clipboard + Cmd+V
+├── cancelRecording()   — stop engine, save partial to clipboard
 ├── Carbon hotkeys      — RegisterEventHotKey (tilde=toggle, escape=cancel)
 ├── NSEvent fallback    — if Carbon registration fails
 ├── Sparkle updater     — SUUpdater via SPM, checks appcast.xml
@@ -123,7 +123,8 @@ On tag push (`v*`), `.github/workflows/release.yml`:
 
 ## Known Quirks
 
-- Audio recording uses SoX `rec` — auto-detected via `/opt/homebrew/bin/rec`, `/usr/local/bin/rec`, or `which rec`
+- Audio recording uses native AVAudioEngine — no external dependencies
+- AVAudioConverter resamples from mic's native rate (usually 48kHz) to 16kHz mono for Groq Whisper
 - LLM hallucination guard: if corrected text >3x raw length, falls back to raw
 
 ## History

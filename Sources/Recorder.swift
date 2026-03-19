@@ -1,9 +1,10 @@
 import Foundation
 import Cocoa
 import AudioToolbox
+import AVFoundation
 
 // ═══════════════════════════════════════════════════════════════════
-// Audio Recording — WAV file via SoX `rec`
+// Audio Recording — WAV file via AVAudioEngine (native)
 // ═══════════════════════════════════════════════════════════════════
 
 protocol RecorderDelegate: AnyObject {
@@ -22,73 +23,90 @@ class Recorder {
     var recordingStartTime: Date?
     var audioLevel: Float = 0
 
-    private var recProcess: Process?
-    private var audioMonitorProcess: Process?
+    private var audioEngine: AVAudioEngine?
+    private var audioFile: AVAudioFile?
     private var audioFilePath = ""
+    private let writeQueue = DispatchQueue(label: "com.arcimun.ember.audiowrite")
 
     weak var delegate: RecorderDelegate?
-
-    // ─── Find rec (SoX) binary ──────────────────────────────────────
-    private func findRecBinary() -> String {
-        for path in ["/opt/homebrew/bin/rec", "/usr/local/bin/rec", "/usr/bin/rec"] {
-            if FileManager.default.fileExists(atPath: path) { return path }
-        }
-        // Try PATH via which
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        task.arguments = ["rec"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        try? task.run()
-        task.waitUntilExit()
-        let result = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return result.isEmpty ? "/opt/homebrew/bin/rec" : result
-    }
 
     func startRecording() {
         guard !isRecording && !isStopping else { return }
         isRecording = true; currentText = ""; recordingStartTime = Date()
 
-        audioFilePath = NSTemporaryDirectory() + "dictation_\(Int(Date().timeIntervalSince1970)).wav"
-
+        audioFilePath = NSTemporaryDirectory() + "ember_\(Int(Date().timeIntervalSince1970)).wav"
         log("🎙️ Recording to \(audioFilePath.components(separatedBy: "/").last ?? "")")
 
-        // Record to WAV file using rec (SoX)
-        let recBin = findRecBinary()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: recBin)
-        process.arguments = ["-q", "-r", "16000", "-c", "1", "-b", "16", audioFilePath]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // Target format: 16kHz mono 16-bit signed integer (Groq Whisper compatible)
+        guard let wavFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true) else {
+            log("❌ Cannot create WAV format")
+            isRecording = false
+            return
+        }
 
         do {
-            try process.run(); recProcess = process
-            AudioServicesPlaySystemSound(1113)
-            delegate?.recorderDidStartRecording()
+            audioFile = try AVAudioFile(forWriting: URL(fileURLWithPath: audioFilePath), settings: wavFormat.settings)
+        } catch {
+            log("❌ Cannot create WAV file: \(error)")
+            isRecording = false
+            return
+        }
 
-            // Start audio monitor (raw PCM to stdout for RMS level)
-            let monitor = Process()
-            monitor.executableURL = URL(fileURLWithPath: recBin)
-            monitor.arguments = ["-q", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-L", "-"]
-            monitor.standardError = FileHandle.nullDevice
-            let monPipe = Pipe()
-            monitor.standardOutput = monPipe
-            monPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                data.withUnsafeBytes { raw in
-                    guard let ptr = raw.bindMemory(to: Int16.self).baseAddress else { return }
-                    let cnt = data.count / 2; var sum: Float = 0
-                    for i in 0..<cnt { let s = Float(ptr[i]) / 32768.0; sum += s * s }
-                    let rms = sqrt(sum / max(Float(cnt), 1))
-                    self?.audioLevel = (self?.audioLevel ?? 0) * 0.6 + rms * 0.4
-                    self?.delegate?.recorderDidUpdateAudioLevel(self?.audioLevel ?? 0)
+        // Install tap on input node
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+
+            // RMS level calculation (on audio thread — lightweight math only)
+            if let channelData = buffer.floatChannelData?[0] {
+                let count = Int(buffer.frameLength)
+                var sum: Float = 0
+                for i in 0..<count { sum += channelData[i] * channelData[i] }
+                let rms = sqrt(sum / max(Float(count), 1))
+                self.audioLevel = self.audioLevel * 0.6 + rms * 0.4
+                DispatchQueue.main.async {
+                    self.delegate?.recorderDidUpdateAudioLevel(self.audioLevel)
                 }
             }
-            try monitor.run()
-            audioMonitorProcess = monitor
+
+            // Convert from input format to 16kHz mono Int16 and write to file
+            guard let converter = AVAudioConverter(from: inputFormat, to: wavFormat) else { return }
+            let ratio = 16000.0 / inputFormat.sampleRate
+            let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+            guard outputFrameCount > 0,
+                  let convertedBuffer = AVAudioPCMBuffer(pcmFormat: wavFormat, frameCapacity: outputFrameCount) else { return }
+
+            var error: NSError?
+            var hasData = true
+            converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+                if hasData {
+                    outStatus.pointee = .haveData
+                    hasData = false
+                    return buffer
+                }
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+
+            if error == nil && convertedBuffer.frameLength > 0 {
+                self.writeQueue.async { [weak self] in
+                    try? self?.audioFile?.write(from: convertedBuffer)
+                }
+            }
+        }
+
+        do {
+            try engine.start()
+            audioEngine = engine
+            AudioServicesPlaySystemSound(1113)
+            delegate?.recorderDidStartRecording()
         } catch {
-            log("❌ rec: \(error)"); isRecording = false
+            log("❌ AVAudioEngine: \(error)")
+            isRecording = false
+            inputNode.removeTap(onBus: 0)
         }
     }
 
@@ -96,7 +114,7 @@ class Recorder {
         guard isRecording else { return }
         isRecording = false; isStopping = true
         log("⏹️ Stopping..."); AudioServicesPlaySystemSound(1114)
-        killRec()
+        stopEngine()
         delegate?.recorderDidStopRecording()
         delegate?.recorderDidStartProcessing()
 
@@ -148,7 +166,7 @@ class Recorder {
         guard isRecording else { return }
         isRecording = false
         log("❌ Cancelled"); AudioServicesPlaySystemSound(1114)
-        killRec()
+        stopEngine()
         try? FileManager.default.removeItem(atPath: audioFilePath)
 
         // Save to clipboard (even on cancel)
@@ -161,16 +179,14 @@ class Recorder {
         delegate?.recorderDidCancel()
     }
 
-    private func killRec() {
-        if let p = recProcess, p.isRunning {
-            kill(p.processIdentifier, SIGINT)
-            let dl = Date().addingTimeInterval(1.0); while p.isRunning && Date() < dl { usleep(50_000) }
-            if p.isRunning { p.terminate() }
-        }; recProcess = nil
-
-        // Kill audio monitor
-        if let m = audioMonitorProcess, m.isRunning { m.terminate() }
-        audioMonitorProcess = nil
+    private func stopEngine() {
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+        // Flush all pending writes before closing the file
+        writeQueue.sync {
+            self.audioFile = nil
+        }
         audioLevel = 0
     }
 }
