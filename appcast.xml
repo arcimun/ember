@@ -6,6 +6,27 @@
     <description>Ember voice-to-text updates</description>
     <language>en</language>
     <item>
+      <title>Version 1.1.0</title>
+      <sparkle:version>1.1.0</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 19 Mar 2026 00:00:00 -0700</pubDate>
+      <description><![CDATA[
+        <ul>
+          <li>Native Preferences window (Cmd+,)</li>
+          <li>Zero external dependencies — SoX replaced with AVAudioEngine</li>
+          <li>Modular architecture (5 Swift files)</li>
+          <li>Language selection in Preferences</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/arcimun/ember/releases/download/v1.1.0/Ember-1.1.0.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="2V+qTpqBI9grg/20PJNZx7gKN8WdcKnOo50BVABOZboJ4v85QGrtsQzStlYaE80uFhCZ+JaQyzb2V0kGOL4SAA=="
+        length="2909775"
+      />
+    </item>
+    <item>
       <title>Version 1.0.0</title>
       <sparkle:version>1.0.0</sparkle:version>
       <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
