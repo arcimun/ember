@@ -31,12 +31,16 @@ codesign --force --deep --sign - --identifier com.arcimun.ember "$APP" 2>&1
 
 echo "Stopping old instances..."
 pkill -f Ember 2>/dev/null || true
-pkill -f DictationService 2>/dev/null || true
-pkill -f dictation-service 2>/dev/null || true
 sleep 1
 
+# Reset Accessibility (CDHash changes on each rebuild)
+tccutil reset Accessibility com.arcimun.ember 2>/dev/null || true
+
 echo ""
-echo "✅ Installed! Launch with:"
-echo "   open /Applications/Ember.app"
-echo ""
-echo "First time: add Ember.app to Accessibility in System Settings"
+echo "✅ Installed! Launching Ember..."
+open "$APP"
+
+# Open Accessibility settings — user just needs to toggle the switch
+echo "📋 Opening Accessibility settings — toggle Ember ON for auto-paste"
+sleep 1
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
