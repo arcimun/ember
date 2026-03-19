@@ -34,19 +34,15 @@ Without Accessibility: everything works except auto-paste (Cmd+V). Use manual pa
 
 ## Architecture
 
-Single-file Swift app (`Sources/main.swift`) + HTML overlay.
+Modular Swift app (5 files in `Sources/`) + HTML overlay.
 
 ```
-main.swift (everything)
-├── Config              — loads .env (config.env, .openclaw, arcimun-voice)
-├── PlasmaOverlayWindow — fullscreen transparent WKWebView, loads overlay.html
-├── startRecording()    — AVAudioEngine → WAV file + RMS monitor → JS audio levels
-├── stopRecording()     — stop engine → Groq Whisper STT → Groq LLM fix → clipboard + Cmd+V
-├── cancelRecording()   — stop engine, save partial to clipboard
-├── Carbon hotkeys      — RegisterEventHotKey (tilde=toggle, escape=cancel)
-├── NSEvent fallback    — if Carbon registration fails
-├── Sparkle updater     — SUUpdater via SPM, checks appcast.xml
-└── AppDelegate         — menu bar (SF Symbols), first-run API key dialog, history
+Sources/
+├── App.swift       — AppDelegate, menu bar, hotkeys, Sparkle, Preferences window
+├── Config.swift    — Config struct, .env loading, API key dialog, history
+├── Recorder.swift  — AVAudioEngine recording, RMS monitoring, WAV export
+├── STT.swift       — Groq Whisper transcription, Groq LLM grammar correction
+└── Overlay.swift   — PlasmaOverlayWindow (WebGL2 GLSL, voice-reactive)
 ```
 
 **Pipeline:** `` ` `` → record WAV → Groq Whisper (`whisper-large-v3-turbo`) ~0.7s → Groq LLM (`llama-3.3-70b-versatile`) ~1s → clipboard + auto-paste
