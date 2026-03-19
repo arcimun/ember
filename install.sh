@@ -12,6 +12,7 @@ echo "Installing to $APP..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Ember "$APP/Contents/MacOS/Ember"
 cp Resources/overlay.html "$APP/Contents/Resources/" 2>/dev/null || true
+cp Resources/Ember.icns "$APP/Contents/Resources/" 2>/dev/null || true
 
 # Copy Sparkle framework
 if [ -d ".build/release/Sparkle.framework" ]; then
@@ -44,6 +45,8 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>Ember</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Ember needs microphone access for speech transcription.</string>
     <key>SUFeedURL</key>

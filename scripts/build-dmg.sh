@@ -24,6 +24,7 @@ cp ".build/release/${APP_NAME}" "${STAGING}/${APP_NAME}.app/Contents/MacOS/"
 if [ -f "Resources/overlay.html" ]; then
     cp Resources/overlay.html "${STAGING}/${APP_NAME}.app/Contents/Resources/"
 fi
+cp Resources/Ember.icns "${STAGING}/${APP_NAME}.app/Contents/Resources/" 2>/dev/null || true
 
 # Copy Sparkle framework
 if [ -d ".build/release/Sparkle.framework" ]; then
@@ -57,6 +58,8 @@ cat > "${STAGING}/${APP_NAME}.app/Contents/Info.plist" << PLIST
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>Ember</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Ember needs microphone access for voice transcription.</string>
     <key>SUFeedURL</key>
