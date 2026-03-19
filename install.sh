@@ -13,6 +13,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Ember "$APP/Contents/MacOS/Ember"
 cp Resources/overlay.html "$APP/Contents/Resources/" 2>/dev/null || true
 
+# Copy Sparkle framework
+if [ -d ".build/release/Sparkle.framework" ]; then
+    mkdir -p "$APP/Contents/Frameworks"
+    cp -R .build/release/Sparkle.framework "$APP/Contents/Frameworks/"
+fi
+
 cat > "$APP/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -50,8 +56,11 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
+echo "Fixing framework paths..."
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Ember" 2>/dev/null || true
+
 echo "Signing..."
-codesign --force --sign - --identifier com.arcimun.ember "$APP" 2>&1
+codesign --force --deep --sign - --identifier com.arcimun.ember "$APP" 2>&1
 
 echo "Stopping old instances..."
 pkill -f Ember 2>/dev/null || true

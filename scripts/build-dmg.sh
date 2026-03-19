@@ -25,6 +25,12 @@ if [ -f "Resources/overlay.html" ]; then
     cp Resources/overlay.html "${STAGING}/${APP_NAME}.app/Contents/Resources/"
 fi
 
+# Copy Sparkle framework
+if [ -d ".build/release/Sparkle.framework" ]; then
+    mkdir -p "${STAGING}/${APP_NAME}.app/Contents/Frameworks"
+    cp -R .build/release/Sparkle.framework "${STAGING}/${APP_NAME}.app/Contents/Frameworks/"
+fi
+
 # Generate Info.plist (same as install.sh)
 cat > "${STAGING}/${APP_NAME}.app/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -63,8 +69,11 @@ cat > "${STAGING}/${APP_NAME}.app/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
+echo "Fixing framework paths..."
+install_name_tool -add_rpath "@executable_path/../Frameworks" "${STAGING}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" 2>/dev/null || true
+
 echo "Signing..."
-codesign --force --sign - --identifier "${BUNDLE_ID}" "${STAGING}/${APP_NAME}.app"
+codesign --force --deep --sign - --identifier "${BUNDLE_ID}" "${STAGING}/${APP_NAME}.app"
 
 echo "Creating DMG..."
 if command -v create-dmg &>/dev/null; then

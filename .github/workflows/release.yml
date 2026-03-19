@@ -29,6 +29,10 @@ jobs:
           mkdir -p Ember.app/Contents/Resources
           cp .build/release/Ember Ember.app/Contents/MacOS/
           cp Resources/overlay.html Ember.app/Contents/Resources/ || true
+          if [ -d ".build/release/Sparkle.framework" ]; then
+            mkdir -p Ember.app/Contents/Frameworks
+            cp -R .build/release/Sparkle.framework Ember.app/Contents/Frameworks/
+          fi
           cat > Ember.app/Contents/Info.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -62,8 +66,10 @@ jobs:
           </plist>
           EOF
 
-      - name: Sign app
-        run: codesign --force --sign - --identifier com.arcimun.ember Ember.app
+      - name: Fix framework paths and sign
+        run: |
+          install_name_tool -add_rpath "@executable_path/../Frameworks" Ember.app/Contents/MacOS/Ember 2>/dev/null || true
+          codesign --force --deep --sign - --identifier com.arcimun.ember Ember.app
 
       - name: Create DMG
         env:
