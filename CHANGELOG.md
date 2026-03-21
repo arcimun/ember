@@ -2,6 +2,29 @@
 
 All notable changes to Ember will be documented in this file.
 
+## [1.2.0] - 2026-03-21
+
+### Added
+- 5 visual themes: Violet Flame, Aurora, Nebula, Solar, Minimal — all WebGL2 GLSL, voice-reactive
+- Theme switcher in menu bar with checkmarks, instant reload, disabled during recording
+- History window (600x500) with search, copy to clipboard, and re-paste
+- Background loading with spinner for history files
+- Whisper model benchmark script (`scripts/benchmark-whisper.sh`)
+- XCTest foundation: ConfigTests + RecorderTests
+
+### Changed
+- Language auto-detection by default (`DICTATION_LANGUAGE=auto`)
+- Whisper API switched to `verbose_json` format for detected language metadata
+- LLM prompt is now language-agnostic (works for any language, not just Russian)
+- `saveHistory()` now saves raw + corrected text, detected language, and duration
+- `Config.save()` uses read-modify-write pattern (preserves all fields)
+- Theme system: `Resources/themes/` directory, each theme = standalone HTML file
+- History JSON format: `corrected` + `raw` fields (backward-compatible with old `text` format)
+
+### Removed
+- Hardcoded Russian language in LLM prompt
+- Static `overlay.html` (replaced by theme system)
+
 ## [1.1.0] - 2026-03-19
 
 ### Added

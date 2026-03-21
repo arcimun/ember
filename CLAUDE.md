@@ -1,6 +1,10 @@
-# CLAUDE.md — Ember
+# CLAUDE.md
 
-macOS voice-to-text app with plasma overlay and auto-paste. Version 1.0.0.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Ember
+
+macOS voice-to-text app with plasma overlay and auto-paste.
 
 ## Quick Start
 
@@ -34,25 +38,26 @@ Without Accessibility: everything works except auto-paste (Cmd+V). Use manual pa
 
 ## Architecture
 
-Modular Swift app (5 files in `Sources/`) + HTML overlay.
+Modular Swift app (6 files in `Sources/`) + WebGL2 themes.
 
 ```
 Sources/
 ├── App.swift       — AppDelegate, menu bar, hotkeys, Sparkle, Preferences window
 ├── Config.swift    — Config struct, .env loading, API key dialog, history
 ├── Recorder.swift  — AVAudioEngine recording, RMS monitoring, WAV export
-├── STT.swift       — Groq Whisper transcription, Groq LLM grammar correction
-└── Overlay.swift   — PlasmaOverlayWindow (WebGL2 GLSL, voice-reactive)
+├── STT.swift       — Groq Whisper transcription (verbose_json), Groq LLM grammar correction
+├── Overlay.swift   — PlasmaOverlayWindow (WebGL2 GLSL, voice-reactive)
+└── History.swift   — HistoryWindowController (NSTableView, search, copy, re-paste)
 ```
 
-**Pipeline:** `` ` `` → record WAV → Groq Whisper (`whisper-large-v3-turbo`) ~0.7s → Groq LLM (`llama-3.3-70b-versatile`) ~1s → clipboard + auto-paste
+**Pipeline:** `` ` `` → record WAV → Groq Whisper (`whisper-large-v3-turbo`, verbose_json) ~0.7s → Groq LLM (`llama-3.3-70b-versatile`) ~1s → clipboard + auto-paste
 
 ## Key Files
 
 | File | What |
 |------|------|
-| `Sources/main.swift` | Entire app: delegate, overlay, recording, STT, LLM, hotkeys, Sparkle |
-| `Resources/overlay.html` | Violet Flame theme — WebGL2 GLSL fragment shader |
+| `Sources/App.swift` | AppDelegate, menu bar, hotkeys, Sparkle, Preferences, theme switcher |
+| `Resources/themes/*.html` | WebGL2 GLSL themes (violet-flame, aurora, nebula, solar, minimal) |
 | `install.sh` | Build + sign + copy to /Applications/ |
 | `scripts/build-dmg.sh` | Build + create distributable DMG |
 | `Package.swift` | SPM config (macOS 14+, Sparkle dependency) |
@@ -180,7 +185,7 @@ Key files for release:
 
 - Bundle ID: `com.arcimun.ember`
 - Version: read from `VERSION` file
-- Swift Package Manager, swift-tools-version 5.9, macOS 14+
+- Swift Package Manager, swift-tools-version 5.9, macOS 13+
 - Ad-hoc signed (`codesign --sign -`)
 - Sparkle 2 for auto-updates (EdDSA, private key in GitHub Secret `SPARKLE_PRIVATE_KEY`)
 - License: MIT
