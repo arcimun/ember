@@ -104,9 +104,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     var updaterController: SPUStandardUpdaterController!
     let recorder = Recorder()
     var preferencesWindow: NSWindow?
+    var themeMenu: NSMenu!
+    let historyController = HistoryWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        log("🎤 Ember v1.0.0 starting...")
+        log("🎤 Ember starting...")
         appDelegateRef = self
         recorder.delegate = self
 
@@ -144,10 +146,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         prefsItem.target = self
         menu.addItem(prefsItem)
         menu.addItem(.separator())
+        // Theme submenu
+        themeMenu = NSMenu(title: "Theme")
+        buildThemeMenu()
+        let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
+        themeItem.submenu = themeMenu
+        menu.addItem(themeItem)
+
         let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         updateItem.target = updaterController
         menu.addItem(updateItem)
-        let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "h"); hi.target = self; menu.addItem(hi)
+        let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: ""); hi.target = self; menu.addItem(hi)
         menu.addItem(.separator())
         let qi = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"); qi.target = self; menu.addItem(qi)
         statusItem.menu = menu
@@ -193,8 +202,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         }
     }
 
-    @objc func openHistory() { NSWorkspace.shared.open(URL(fileURLWithPath: historyDir)) }
+    @objc func openHistory() { historyController.showWindow() }
     @objc func quitApp() { if recorder.isRecording { recorder.stopRecording() }; NSApp.terminate(nil) }
+
+    // ─── Theme Switching ──────────────────────────────────────────
+    func buildThemeMenu() {
+        themeMenu.removeAllItems()
+        for name in PlasmaOverlayWindow.availableThemes() {
+            let title = name.replacingOccurrences(of: "-", with: " ").split(separator: " ")
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+            let item = NSMenuItem(title: title, action: #selector(switchTheme(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.state = (name == config.theme) ? .on : .off
+            themeMenu.addItem(item)
+        }
+    }
+
+    @objc func switchTheme(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        config.theme = name
+        Config.saveField("THEME", value: name)
+        overlayWindow?.loadTheme(name)
+        // Restore overlay state if currently active
+        if overlayWindow?.isShowing == true {
+            overlayWindow?.webView.evaluateJavaScript("window.setActive(true)", completionHandler: nil)
+        }
+        buildThemeMenu()
+        log("🎨 Theme switched to: \(name)")
+    }
+
+    func setThemeMenuEnabled(_ enabled: Bool) {
+        for item in themeMenu.items { item.isEnabled = enabled }
+    }
 
     // ─── Preferences Window ───────────────────────────────────────
 
@@ -369,11 +409,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     // ─── RecorderDelegate ─────────────────────────────────────────
     func recorderDidStartRecording() {
         setRecordingState(true)
+        setThemeMenuEnabled(false)
         overlayWindow?.show()
     }
 
     func recorderDidStopRecording() {
         setRecordingState(false)
+        setThemeMenuEnabled(true)
     }
 
     func recorderDidStartProcessing() {
@@ -406,6 +448,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
     func recorderDidCancel() {
         setRecordingState(false)
+        setThemeMenuEnabled(true)
         overlayWindow?.hide()
     }
 
