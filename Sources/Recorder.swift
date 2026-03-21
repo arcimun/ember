@@ -114,12 +114,11 @@ class Recorder {
         let apiKey = config.groqKey
         let language = config.language
 
-        transcribeWithGroq(filePath: filePath, apiKey: apiKey, language: language) { [weak self] rawText in
+        let startTime = self.recordingStartTime
+        transcribeWithGroq(filePath: filePath, apiKey: apiKey, language: language) { [weak self] result in
             guard let self = self else { return }
 
-            // Skip if empty, too short, or just whitespace
-            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count > 2 else {
+            guard let result = result, result.text.count > 2 else {
                 log("⚠️ No speech detected")
                 DispatchQueue.main.async {
                     self.delegate?.recorderDidFinishProcessing(text: "")
@@ -129,11 +128,13 @@ class Recorder {
                 return
             }
 
-            self.currentText = trimmed
-            log("📝 Raw: \"\(trimmed.prefix(100))\"")
+            let rawText = result.text
+            let detectedLang = result.language
+            self.currentText = rawText
+            log("📝 Raw: \"\(rawText.prefix(100))\"")
 
             // LLM post-processing
-            postProcessText(trimmed, apiKey: apiKey) { [weak self] correctedText in
+            postProcessText(rawText, apiKey: apiKey) { [weak self] correctedText in
                 guard let self = self else { return }
                 self.currentText = correctedText
 
@@ -141,7 +142,8 @@ class Recorder {
                     self.delegate?.recorderDidFinishProcessing(text: correctedText)
                 }
 
-                saveHistory(currentText: correctedText, recordingStartTime: self.recordingStartTime)
+                let duration = startTime.map { Date().timeIntervalSince($0) } ?? 0
+                saveHistory(raw: rawText, corrected: correctedText, language: detectedLang, duration: duration)
                 try? FileManager.default.removeItem(atPath: filePath)
                 self.isStopping = false
                 log("✅ Done: \"\(correctedText.prefix(100))\"")
