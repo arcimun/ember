@@ -11,8 +11,12 @@ swift build -c release 2>&1
 echo "Installing to $APP..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Ember "$APP/Contents/MacOS/Ember"
-cp Resources/overlay.html "$APP/Contents/Resources/" 2>/dev/null || true
 cp Resources/Ember.icns "$APP/Contents/Resources/" 2>/dev/null || true
+# Copy themes directory
+if [ -d "Resources/themes" ]; then
+    rm -rf "$APP/Contents/Resources/themes"
+    cp -R Resources/themes "$APP/Contents/Resources/themes"
+fi
 
 # Copy Sparkle framework
 if [ -d ".build/release/Sparkle.framework" ]; then

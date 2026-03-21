@@ -28,7 +28,7 @@ jobs:
           mkdir -p Ember.app/Contents/MacOS
           mkdir -p Ember.app/Contents/Resources
           cp .build/release/Ember Ember.app/Contents/MacOS/
-          cp Resources/overlay.html Ember.app/Contents/Resources/ || true
+          cp -R Resources/themes Ember.app/Contents/Resources/themes || true
           cp Resources/Ember.icns Ember.app/Contents/Resources/ || true
           if [ -d ".build/release/Sparkle.framework" ]; then
             mkdir -p Ember.app/Contents/Frameworks

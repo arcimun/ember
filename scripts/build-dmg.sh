@@ -20,9 +20,9 @@ mkdir -p "dist"
 
 cp ".build/release/${APP_NAME}" "${STAGING}/${APP_NAME}.app/Contents/MacOS/"
 
-# Copy overlay HTML resources
-if [ -f "Resources/overlay.html" ]; then
-    cp Resources/overlay.html "${STAGING}/${APP_NAME}.app/Contents/Resources/"
+# Copy themes
+if [ -d "Resources/themes" ]; then
+    cp -R Resources/themes "${STAGING}/${APP_NAME}.app/Contents/Resources/themes"
 fi
 cp Resources/Ember.icns "${STAGING}/${APP_NAME}.app/Contents/Resources/" 2>/dev/null || true
 
