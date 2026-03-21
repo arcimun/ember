@@ -22,9 +22,9 @@ class PlasmaOverlayWindow: NSWindow {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         // WKWebView with TRULY transparent background
-        let config = WKWebViewConfiguration()
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        webView = WKWebView(frame: screen.frame, configuration: config)
+        let webConfig = WKWebViewConfiguration()
+        webConfig.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        webView = WKWebView(frame: screen.frame, configuration: webConfig)
 
         // Multiple transparency methods for reliability
         webView.setValue(false, forKey: "drawsBackground")
@@ -42,13 +42,7 @@ class PlasmaOverlayWindow: NSWindow {
             self?.adaptToScreen()
         }
 
-        // Load overlay HTML
-        if let path = Bundle.main.path(forResource: "overlay", ofType: "html") {
-            webView.loadFileURL(URL(fileURLWithPath: path), allowingReadAccessTo: URL(fileURLWithPath: path).deletingLastPathComponent())
-            log("🎨 Overlay HTML loaded")
-        } else {
-            log("⚠️ overlay.html not found")
-        }
+        loadTheme(config.theme)
     }
 
     func adaptToScreen() {
@@ -56,6 +50,28 @@ class PlasmaOverlayWindow: NSWindow {
         setFrame(screen.frame, display: true)
         webView.frame = NSRect(origin: .zero, size: screen.frame.size)
         log("🖥️ Overlay adapted to screen: \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    }
+
+    func loadTheme(_ name: String) {
+        let themesURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/themes")
+        var themeURL = themesURL.appendingPathComponent("\(name).html")
+        if !FileManager.default.fileExists(atPath: themeURL.path) {
+            log("⚠️ Theme '\(name)' not found, falling back to violet-flame")
+            themeURL = themesURL.appendingPathComponent("violet-flame.html")
+        }
+        guard FileManager.default.fileExists(atPath: themeURL.path) else {
+            log("❌ No theme files found"); return
+        }
+        webView.loadFileURL(themeURL, allowingReadAccessTo: themesURL)
+        log("🎨 Theme loaded: \(name)")
+    }
+
+    static func availableThemes() -> [String] {
+        let themesURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/themes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: themesURL.path) else { return [] }
+        return files.filter { $0.hasSuffix(".html") }
+            .map { $0.replacingOccurrences(of: ".html", with: "") }
+            .sorted()
     }
 
     func show() {

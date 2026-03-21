@@ -5,13 +5,18 @@ import Foundation
 // ═══════════════════════════════════════════════════════════════════
 
 // ─── Groq Whisper STT (fast, free, one API key for both STT + LLM) ──
-func transcribeWithGroq(filePath: String, apiKey: String, language: String, completion: @escaping (String) -> Void) {
+struct WhisperResult {
+    let text: String
+    let language: String
+}
+
+func transcribeWithGroq(filePath: String, apiKey: String, language: String, completion: @escaping (WhisperResult?) -> Void) {
     guard !apiKey.isEmpty else {
-        log("❌ No GROQ_API_KEY!"); completion(""); return
+        log("❌ No GROQ_API_KEY!"); completion(nil); return
     }
 
     guard let fileData = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {
-        log("❌ Cannot read audio file"); completion(""); return
+        log("❌ Cannot read audio file"); completion(nil); return
     }
 
     let url = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!
@@ -31,29 +36,34 @@ func transcribeWithGroq(filePath: String, apiKey: String, language: String, comp
     body.append("\r\n".data(using: .utf8)!)
     // Model
     body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-large-v3-turbo\r\n".data(using: .utf8)!)
-    // Language
-    body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\(language)\r\n".data(using: .utf8)!)
-    // Response format
-    body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n".data(using: .utf8)!)
+    // Language — omit when "auto" to let Whisper auto-detect
+    if language != "auto" {
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\(language)\r\n".data(using: .utf8)!)
+    }
+    // Response format — verbose_json to get detected language
+    body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\nverbose_json\r\n".data(using: .utf8)!)
     body.append("--\(boundary)--\r\n".data(using: .utf8)!)
     request.httpBody = body
 
-    log("📤 Groq Whisper: \(fileData.count / 1024)KB...")
+    log("📤 Groq Whisper: \(fileData.count / 1024)KB... (lang: \(language))")
 
     URLSession.shared.dataTask(with: request) { data, response, error in
         if let error = error {
-            log("❌ Groq STT: \(error.localizedDescription)"); completion(""); return
+            log("❌ Groq STT: \(error.localizedDescription)"); completion(nil); return
         }
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let b = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            log("❌ Groq STT HTTP \(http.statusCode): \(b.prefix(200))"); completion(""); return
+            log("❌ Groq STT HTTP \(http.statusCode): \(b.prefix(200))"); completion(nil); return
         }
         guard let data = data,
-              let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
-            log("⚠️ Groq STT: empty"); completion(""); return
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["text"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            log("⚠️ Groq STT: empty"); completion(nil); return
         }
-        completion(text)
+        let detectedLang = json["language"] as? String ?? "unknown"
+        log("🌐 Detected language: \(detectedLang)")
+        completion(WhisperResult(text: text.trimmingCharacters(in: .whitespacesAndNewlines), language: detectedLang))
     }.resume()
 }
 
@@ -77,13 +87,7 @@ func postProcessText(_ rawText: String, apiKey: String, completion: @escaping (S
         "model": "llama-3.3-70b-versatile",
         "temperature": 0,
         "messages": [
-            ["role": "system", "content": """
-                You are a text corrector for voice-dictated text. The text was dictated in Russian with occasional English words (code-switching).
-                Fix: grammar, punctuation, spelling, spacing, capitalization.
-                Preserve the original meaning exactly. Do not add or remove content.
-                If English words/names appear (Claude, iPhone, Deepgram, etc.) — keep them in English with correct spelling.
-                Return ONLY the corrected text, nothing else.
-                """],
+            ["role": "system", "content": "Fix grammar and punctuation. Keep the original language. Do not translate. Do not add or remove content. Return ONLY the corrected text."],
             ["role": "user", "content": rawText]
         ]
     ]

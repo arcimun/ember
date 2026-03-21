@@ -21,7 +21,8 @@ func log(_ msg: String) {
 // ─── Config ──────────────────────────────────────────────────────
 struct Config {
     var groqKey: String = ""
-    var language: String = "ru"
+    var language: String = "auto"
+    var theme: String = "violet-flame"
     var endDelay: Double = 0.8
 
     static func load() -> Config {
@@ -40,17 +41,39 @@ struct Config {
                 let v = String(parts[1]).trimmingCharacters(in: .whitespaces)
                 if k == "GROQ_API_KEY" && cfg.groqKey.isEmpty { cfg.groqKey = v }
                 if k == "DICTATION_LANGUAGE" { cfg.language = v }
+                if k == "THEME" { cfg.theme = v }
             }
         }
         return cfg
     }
 
+    static let configPath: String = {
+        let dir = NSString(string: "~/.config/ember").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return (dir as NSString).appendingPathComponent("config.env")
+    }()
+
+    /// Read-modify-write: updates only specified keys, preserves everything else
+    static func saveField(_ key: String, value: String) {
+        var lines = ((try? String(contentsOfFile: configPath, encoding: .utf8)) ?? "")
+            .components(separatedBy: .newlines)
+        var found = false
+        lines = lines.map { line in
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=") {
+                found = true; return "\(key)=\(value)"
+            }
+            return line
+        }
+        if !found {
+            if let last = lines.last, last.isEmpty { lines.insert("\(key)=\(value)", at: lines.count - 1) }
+            else { lines.append("\(key)=\(value)") }
+        }
+        try? lines.joined(separator: "\n").write(toFile: configPath, atomically: true, encoding: .utf8)
+    }
+
     static func save(groqKey: String, language: String) {
-        let configDir = NSString(string: "~/.config/ember").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        let configPath = (configDir as NSString).appendingPathComponent("config.env")
-        let contents = "GROQ_API_KEY=\(groqKey)\nDICTATION_LANGUAGE=\(language)\n"
-        try? contents.write(toFile: configPath, atomically: true, encoding: .utf8)
+        saveField("GROQ_API_KEY", value: groqKey)
+        saveField("DICTATION_LANGUAGE", value: language)
         log("✅ Config saved to \(configPath)")
     }
 }
@@ -123,14 +146,18 @@ let historyDir: String = {
     return p
 }()
 
-func saveHistory(currentText: String, recordingStartTime: Date?) {
-    guard !currentText.isEmpty else { return }
-    let dur = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+func saveHistory(raw: String, corrected: String, language: String, duration: Double) {
+    guard !corrected.isEmpty else { return }
     let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
     let path = (historyDir as NSString).appendingPathComponent("\(f.string(from: Date())).json")
-    let entry: [String: Any] = ["timestamp": ISO8601DateFormatter().string(from: Date()),
-                                 "duration": round(dur*10)/10, "text": currentText,
-                                 "provider": "groq-whisper", "language": config.language]
+    var entry: [String: Any] = [
+        "timestamp": ISO8601DateFormatter().string(from: Date()),
+        "duration_ms": Int(duration * 1000),
+        "corrected": corrected,
+        "language": language,
+        "provider": "groq-whisper"
+    ]
+    if !raw.isEmpty { entry["raw"] = raw }
     if let d = try? JSONSerialization.data(withJSONObject: entry, options: .prettyPrinted) {
         try? d.write(to: URL(fileURLWithPath: path))
         log("💾 \(path.components(separatedBy: "/").last ?? "")")

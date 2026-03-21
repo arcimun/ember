@@ -19,8 +19,12 @@ let package = Package(
             dependencies: ["Sparkle"],
             path: "Sources",
             resources: [
-                .copy("../Resources/overlay.html")
+                .copy("../Resources/themes")
             ]
+        ),
+        .testTarget(
+            name: "EmberTests",
+            path: "Tests/EmberTests"
         )
     ]
 )
