@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Minimal — monochrome white glow, subtle pulse
+// Clean, distraction-free, for those who prefer simplicity
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0, processing = false;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform float uTime, uAudio, uFade, uProcessing;
+uniform vec2 uRes;
+
+void main() {
+  vec2 uv = vUv;
+  float dT = uv.y, dB = 1.0 - uv.y, dL = uv.x, dR = 1.0 - uv.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Thin, clean border glow — no noise, just math
+  float depth = 0.025 + uAudio * 0.02;
+  float glow = 1.0 - smoothstep(0.0, depth, dEdge);
+
+  // Subtle sine pulse along edges
+  float pulse = sin(uTime * 1.5) * 0.1 + 0.9;
+  glow *= pulse;
+
+  // Audio makes the glow slightly brighter and wider
+  glow *= (0.7 + uAudio * 0.6);
+  glow = clamp(glow, 0.0, 0.6);
+
+  // Monochrome white/gray — processing shifts to soft blue
+  float pm = uProcessing;
+  vec3 color = mix(vec3(0.85, 0.85, 0.85), vec3(0.5, 0.65, 0.9), pm);
+
+  float breath = 0.9 + 0.1 * sin(uTime * 0.3);
+  float alpha = glow * breath * uFade;
+  alpha *= smoothstep(depth * 2.0, 0.0, dEdge);
+
+  fragColor = vec4(color * alpha, alpha);
+}`;
+
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  requestAnimationFrame(render);
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.3 + audioLevel * 0.7
+    : smoothAudio * 0.93 + audioLevel * 0.07;
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.06);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.02);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (fadeProgress > 0.01) {
+    const t = performance.now() / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 3, 0.8));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, processing ? 1.0 : 0.0);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+render();
+
+window.setAudioLevel = (v) => { audioLevel = v; };
+window.setActive = (on) => { active = on; if (!on) smoothAudio = 0; };
+window.setProcessing = (on) => { processing = on; };
+</script>
+</body></html>
