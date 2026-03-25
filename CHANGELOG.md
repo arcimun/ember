@@ -2,6 +2,38 @@
 
 All notable changes to Ember will be documented in this file.
 
+## [1.3.0] - 2026-03-25
+
+### Added
+- **Error handling system** — EmberError enum with 10 typed errors, delegate-based propagation
+- User-visible notifications for all 12 error paths (no more silent failures)
+- Overlay error flash (red) across all 5 themes
+- Overlay celebration pulse on successful transcription across all 5 themes
+- Recording timer in menu bar (elapsed time display)
+- Microphone access check on launch with user guidance
+- Multi-display support (overlay follows cursor screen)
+- Reduce Motion accessibility (auto-switches to minimal theme)
+- API key validation (gsk_ prefix check) in first-run dialog
+- Value proposition text in onboarding dialog
+- Theme creation guide (docs/creating-themes.md)
+- CONTRIBUTING.md for community contributions
+- GitHub issue templates (bug, feature, theme submission)
+- Launch-ready README with header image and badges
+
+### Changed
+- `afconvert` subprocess replaced with native AVAudioConverter (faster, no shell dependency)
+- `usleep` replaced with `DispatchQueue.main.asyncAfter` in auto-paste (non-blocking)
+- Paste logic deduplicated into `simulatePaste()` shared function
+- Frontmost application check before auto-paste (prevents pasting into wrong window)
+- `NSSecureTextField` in first-run API key dialog (was plain NSTextField)
+- `DateFormatter` cached in log() (was recreating on every call)
+- RAF animation cycle stops when overlay is hidden (battery savings)
+- Skip button explains consequences ("transcription disabled")
+
+### Fixed
+- Recursive `showApiKeyDialog()` call replaced with `DispatchQueue.main.async`
+- Audio write errors now caught with do/catch (was silently swallowed with try?)
+
 ## [1.2.0] - 2026-03-21
 
 ### Added
