@@ -10,9 +10,12 @@
 
 ## Why Ember?
 
-- **~1.7s end-to-end** — Groq Whisper transcription + LLM grammar correction, faster than you can reach for the keyboard
-- **Works in any app** — auto-pastes corrected text into whatever window is active
-- **Beautiful overlay** — WebGL2 plasma reacts to your voice in real time, 5 themes to choose from
+- **Under 1 second** — Groq Whisper transcription, faster than you can reach for the keyboard
+- **Works everywhere** — auto-pastes into whatever app you're using. Slack, VS Code, Notes, anything
+- **Beautiful overlay** — voice-reactive plasma animation on your screen edges. 5 themes
+- **Set your own hotkey** — backtick by default, change to any key combo in Preferences
+- **Smart auto-stop** — detects when you stop speaking and transcribes automatically
+- **Free forever** — open-source, MIT license, free Groq API
 
 ---
 
@@ -24,25 +27,43 @@ brew install --cask arcimun/tap/ember
 
 **DMG** — download from [Releases](https://github.com/arcimun/ember/releases/latest), open and drag to Applications.
 
-**Build from source** — see [Building from source](#building-from-source) below.
+**Build from source** — see [below](#building-from-source).
 
 ---
 
 ## How it works
 
-Press `` ` `` — speak — text appears.
+**Hold your hotkey. Speak. Release. Text appears.**
 
 ```
-Press `  →  Recording starts  →  Plasma overlay appears
-Speak    →  Overlay reacts to your voice in real time
-Press `  →  Groq Whisper STT (~0.7s)  →  LLM grammar fix (~1s)  →  Auto-paste
+Hold `   →  Plasma overlay appears, reacts to your voice
+Speak    →  Say anything in any language
+Release  →  Groq Whisper transcribes in ~0.7s  →  Text auto-pastes
 ```
+
+That's it. No window to switch to. No app to open. Just voice → text, wherever your cursor is.
+
+---
+
+## Features
+
+| Feature | What it does |
+|---------|-------------|
+| **Instant transcription** | Groq Whisper large-v3-turbo — under 1 second |
+| **Any language** | English, Russian, Spanish, Chinese, Japanese, 50+ languages |
+| **Custom hotkey** | Set any key combo in Preferences (default: backtick) |
+| **Voice auto-stop** | Detects silence and stops recording automatically (opt-in) |
+| **5 plasma themes** | Violet Flame, Aurora, Nebula, Solar, Minimal |
+| **Error feedback** | Notifications for network issues, API errors, mic problems |
+| **Multi-display** | Overlay appears on the screen where your cursor is |
+| **Accessibility** | Respects Reduce Motion, VoiceOver announcements |
+| **Auto-updates** | Sparkle 2 checks for updates automatically |
 
 ---
 
 ## Themes
 
-Switch themes from the menu bar icon. Five included:
+Switch themes from the menu bar icon.
 
 | Theme | Vibe |
 |-------|------|
@@ -52,7 +73,7 @@ Switch themes from the menu bar icon. Five included:
 | **Solar** | Warm amber and gold |
 | **Minimal** | Subtle white pulse, distraction-free |
 
-<!-- Screenshots: docs/themes/ -->
+Want to create your own? See [Creating Themes](docs/creating-themes.md).
 
 ---
 
@@ -62,10 +83,19 @@ Config file: `~/.config/ember/config.env`
 
 ```env
 GROQ_API_KEY=gsk_your_key_here
-DICTATION_LANGUAGE=en
+DICTATION_LANGUAGE=auto
+LLM_CORRECTION=never
+VAD_AUTO_STOP=false
 ```
 
-Whisper supports all major languages: `en`, `ru`, `es`, `fr`, `de`, `zh`, `ja`, `ko`, and many more. Set `DICTATION_LANGUAGE` to any [Whisper-supported language code](https://platform.openai.com/docs/guides/speech-to-text/supported-languages).
+| Option | Values | Default | What |
+|--------|--------|---------|------|
+| `GROQ_API_KEY` | `gsk_...` | — | Your free Groq API key |
+| `DICTATION_LANGUAGE` | `auto`, `en`, `ru`, `es`, etc. | `auto` | Language for transcription |
+| `LLM_CORRECTION` | `never`, `auto`, `always` | `never` | Grammar correction via LLM (adds ~1s) |
+| `VAD_AUTO_STOP` | `true`, `false` | `false` | Auto-stop recording on silence |
+
+All settings are also available in **Preferences** (menu bar → Preferences).
 
 ---
 
@@ -73,20 +103,22 @@ Whisper supports all major languages: `en`, `ru`, `es`, `fr`, `de`, `zh`, `ja`, 
 
 | Key | Action |
 |-----|--------|
-| `` ` `` (backtick) | Start / stop recording |
+| Backtick `` ` `` (default) | Start / stop recording — customizable in Preferences |
 | `Escape` | Cancel recording, save partial text to clipboard |
-| Auto-paste (Cmd+V) | Sent automatically after transcription — requires Accessibility permission |
+| Auto-paste (Cmd+V) | Sent automatically after transcription |
+
+**Custom hotkeys:** Open Preferences → set any key or key combo for recording and cancel.
+
+Accessibility permission is needed only for auto-paste. Without it, everything works — just paste manually with Cmd+V.
 
 ---
 
 ## Requirements
 
-- macOS 13+
-- [Groq API key](https://console.groq.com/keys) — free tier available, no credit card required
+- macOS 13+ (Apple Silicon or Intel)
+- [Free Groq API key](https://console.groq.com/keys) — no credit card needed
 - Microphone permission (prompted on first use)
-- Accessibility permission for auto-paste (optional — manual paste still works without it)
-
-**First launch:** Ember will ask for your Groq key if none is found. Enter it once, and you're set.
+- Accessibility permission for auto-paste (optional)
 
 ---
 
@@ -95,12 +127,11 @@ Whisper supports all major languages: `en`, `ru`, `es`, `fr`, `de`, `zh`, `ja`, 
 ```bash
 git clone https://github.com/arcimun/ember.git
 cd ember
+swift build -c release
 bash install.sh
 ```
 
-Requires Xcode Command Line Tools. The script builds with Swift Package Manager, signs the bundle, and copies it to `/Applications/`.
-
-After install, reset Accessibility permission so macOS recognizes the new binary:
+After install, reset Accessibility so macOS recognizes the new binary:
 
 ```bash
 tccutil reset Accessibility com.arcimun.ember
@@ -112,7 +143,9 @@ Then re-add Ember in System Settings → Privacy & Security → Accessibility.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Ember is ~1,800 lines of Swift across 6 files. The easiest way to contribute is [creating a theme](docs/creating-themes.md) — each theme is a standalone HTML file with WebGL2 shaders.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
