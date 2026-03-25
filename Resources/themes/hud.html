@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// HUD — Sci-fi Heads-Up Display (JARVIS / jet HUD style)
+// Geometric corner brackets, rotating arcs, scanning line,
+// audio meter, data readouts. Canvas 2D.
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const ctx = canvas.getContext('2d');
+
+// ── State ──────────────────────────────────────
+let W = 0, H = 0;
+let audioLevel  = 0;
+let smoothAudio = 0;
+let active      = false;
+let fadeProgress = 0;       // 0..1
+let processing  = false;
+let procAlpha   = 0;        // smooth transition
+let errorState  = false;
+let errorAlpha  = 0;
+let celebAlpha  = 0;        // celebration flash
+
+// Draw-in animation (0..1 per corner/element)
+let drawIn  = 0;
+let scanPos = 0;            // 0..1, horizontal sweep position
+let rotAngle = 0;           // rotating arc element
+let tick    = 0;            // frame counter for fake data flicker
+let rafHandle = null;
+
+// ── Resize ─────────────────────────────────────
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Colors ─────────────────────────────────────
+const CYAN  = '#00ffff';
+const WHITE = '#e0e0e0';
+const AMBER = '#ffaa00';
+const RED   = '#ff2222';
+const GREEN = '#00ff88';
+
+// Thin glow helper
+function setGlow(color, blur) {
+  ctx.shadowColor = color;
+  ctx.shadowBlur  = blur;
+}
+function clearGlow() {
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur  = 0;
+}
+
+// ── Corner Bracket ─────────────────────────────
+// Draws an L-bracket in one corner. progress 0..1 draws the lines.
+// dir: 'tl' | 'tr' | 'bl' | 'br'
+function drawCornerBracket(cx, cy, size, dir, progress, color, audioExpand) {
+  if (progress <= 0) return;
+  const s = size + audioExpand;
+  const arm = Math.round(s * Math.min(progress, 1));
+  const thick = 12;  // short inner cross tick
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.5;
+  setGlow(color, 6);
+  ctx.beginPath();
+
+  // sign multipliers
+  const sx = (dir === 'tl' || dir === 'bl') ? 1 : -1;
+  const sy = (dir === 'tl' || dir === 'tr') ? 1 : -1;
+
+  // Horizontal arm
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + sx * arm, cy);
+  // Vertical arm
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx, cy + sy * arm);
+
+  // Small inner tick (only once fully drawn)
+  if (progress >= 1) {
+    ctx.moveTo(cx + sx * thick, cy + sy * 2);
+    ctx.lineTo(cx + sx * thick, cy + sy * (thick * 0.6));
+    ctx.moveTo(cx + sx * 2, cy + sy * thick);
+    ctx.lineTo(cx + sx * (thick * 0.6), cy + sy * thick);
+  }
+  ctx.stroke();
+  clearGlow();
+}
+
+// ── Rotating Arc Element (top-right) ───────────
+function drawRotatingArc(cx, cy, r, angle, progress, color, speed) {
+  if (progress <= 0) return;
+  const alpha = Math.min(progress, 1) * fadeProgress;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.globalAlpha = alpha;
+
+  // Three thin arc segments
+  const segments = [
+    { start: 0,         sweep: Math.PI * 0.45, w: 1.5 },
+    { start: Math.PI * 0.55, sweep: Math.PI * 0.30, w: 1.0 },
+    { start: Math.PI * 0.95, sweep: Math.PI * 0.55, w: 1.5 },
+  ];
+
+  for (const seg of segments) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = seg.w;
+    setGlow(color, 5);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, seg.start, seg.start + seg.sweep);
+    ctx.stroke();
+
+    // Inner ring, counter-rotation feel
+    ctx.strokeStyle = color + '55';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.72, seg.start + Math.PI, seg.start + Math.PI + seg.sweep * 0.7);
+    ctx.stroke();
+  }
+
+  // Tiny center dot
+  ctx.fillStyle = color;
+  setGlow(color, 8);
+  ctx.beginPath();
+  ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  clearGlow();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ── Audio Level Meter (bottom-left) ────────────
+function drawAudioMeter(x, y, width, audio, progress, color) {
+  if (progress <= 0) return;
+  const bars   = 12;
+  const bw     = 4;
+  const gap    = 3;
+  const maxH   = 22;
+  const filled = Math.ceil(audio * bars);
+
+  ctx.globalAlpha = Math.min(progress, 1) * fadeProgress;
+
+  // Label
+  ctx.fillStyle = WHITE;
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('AUDIO', x, y - 6);
+
+  for (let i = 0; i < bars; i++) {
+    const bx  = x + i * (bw + gap);
+    const vol = (i / (bars - 1));
+    const bh  = Math.max(2, Math.round(maxH * (0.25 + vol * 0.75)));
+    const by  = y + (maxH - bh);
+
+    const lit = i < filled;
+    const barColor = lit
+      ? (i > bars * 0.8 ? RED : i > bars * 0.6 ? AMBER : color)
+      : color + '22';
+
+    ctx.fillStyle = barColor;
+    if (lit) setGlow(barColor, 4);
+    ctx.fillRect(bx, by, bw, bh);
+    clearGlow();
+  }
+
+  // dB readout
+  const db = Math.round(-60 + audio * 60);
+  ctx.fillStyle = audio > 0.01 ? color : WHITE + '44';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText((db >= 0 ? '+' : '') + db + ' dB', x, y + maxH + 12);
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Status Readout (bottom-right) ──────────────
+function drawStatusReadout(x, y, progress, color, processingMode, errorMode) {
+  if (progress <= 0) return;
+  ctx.globalAlpha = Math.min(progress, 1) * fadeProgress;
+
+  const lines = [];
+
+  if (errorMode) {
+    lines.push({ text: 'SYS ERROR', color: RED });
+    lines.push({ text: 'CODE: 0xE2', color: RED + 'aa' });
+    lines.push({ text: 'HALT', color: RED });
+  } else if (processingMode) {
+    lines.push({ text: 'PROCESSING', color: AMBER });
+    lines.push({ text: getTickData(), color: AMBER + 'cc' });
+    lines.push({ text: 'WAIT...', color: AMBER + '88' });
+  } else {
+    lines.push({ text: 'RDY', color: color });
+    lines.push({ text: getTickData(), color: color + 'aa' });
+    lines.push({ text: 'OK', color: color + '66' });
+  }
+
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    ctx.fillStyle = l.color;
+    if (i === 0) setGlow(l.color, 5);
+    ctx.fillText(l.text, x, y + i * 13);
+    clearGlow();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// Fake data ticker
+let lastTickVal = '---';
+function getTickData() {
+  if (tick % 18 === 0) {
+    const v = (Math.random() * 99.9).toFixed(1);
+    lastTickVal = v + '%';
+  }
+  return lastTickVal;
+}
+
+// ── Top-left data label ─────────────────────────
+function drawTopLeftData(x, y, progress, color, processingMode, errorMode) {
+  if (progress <= 0) return;
+  ctx.globalAlpha = Math.min(progress, 1) * fadeProgress * 0.85;
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'left';
+
+  const label = errorMode ? 'ERR' : processingMode ? 'PROC' : 'STT';
+  const lcolor = errorMode ? RED : processingMode ? AMBER : color;
+  ctx.fillStyle = lcolor;
+  setGlow(lcolor, 4);
+  ctx.fillText(label, x, y);
+  clearGlow();
+
+  ctx.fillStyle = WHITE + '66';
+  ctx.fillText('v2.1', x, y + 11);
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Scanning Line (top edge) ───────────────────
+function drawScanLine(progress, color, speed) {
+  if (progress <= 0) return;
+  const alpha = Math.min(progress, 1) * fadeProgress * 0.7;
+  const sx    = scanPos * W;
+  const len   = 80 + smoothAudio * 40;
+
+  ctx.globalAlpha = alpha;
+  const grad = ctx.createLinearGradient(sx - len * 0.2, 0, sx + len, 0);
+  grad.addColorStop(0,   color + '00');
+  grad.addColorStop(0.3, color + 'cc');
+  grad.addColorStop(0.7, color + 'ff');
+  grad.addColorStop(1,   color + '00');
+
+  ctx.strokeStyle = grad;
+  ctx.lineWidth   = 1;
+  setGlow(color, 8);
+  ctx.beginPath();
+  ctx.moveTo(sx - len * 0.2, 2);
+  ctx.lineTo(sx + len, 2);
+  ctx.stroke();
+
+  // Small vertical tick at scan head
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(sx + len, 0);
+  ctx.lineTo(sx + len, 6);
+  ctx.stroke();
+
+  clearGlow();
+  ctx.globalAlpha = 1;
+}
+
+// ── Edge Ruler Marks (left + right) ────────────
+function drawEdgeRulers(progress, color) {
+  if (progress <= 0) return;
+  const alpha = Math.min(progress, 1) * fadeProgress * 0.4;
+  const step  = 20;
+  const marks = Math.floor(H / step);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 0.8;
+  ctx.globalAlpha = alpha;
+
+  for (let i = 1; i < marks; i++) {
+    const y = i * step;
+    const len = (i % 5 === 0) ? 8 : 4;
+
+    // Left ruler
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(len, y);
+    ctx.stroke();
+
+    // Right ruler
+    ctx.beginPath();
+    ctx.moveTo(W, y);
+    ctx.lineTo(W - len, y);
+    ctx.stroke();
+
+    // Label every 5th mark (left side)
+    if (i % 5 === 0) {
+      ctx.fillStyle = color + '55';
+      ctx.font = '7px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(i * step, 11, y + 3);
+    }
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Error Flash Overlay ────────────────────────
+function drawErrorOverlay(alpha) {
+  if (alpha <= 0) return;
+  ctx.globalAlpha = alpha * 0.6;
+  ctx.strokeStyle = RED;
+  ctx.lineWidth   = 3;
+  setGlow(RED, 20);
+  ctx.strokeRect(4, 4, W - 8, H - 8);
+  clearGlow();
+
+  ctx.font = 'bold 11px monospace';
+  ctx.fillStyle = RED;
+  ctx.textAlign = 'center';
+  setGlow(RED, 10);
+  ctx.fillText('!! ERROR !!', W / 2, H / 2);
+  clearGlow();
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Celebration Flash ─────────────────────────
+function drawCelebration(alpha) {
+  if (alpha <= 0) return;
+  ctx.globalAlpha = alpha * 0.8;
+  ctx.strokeStyle = GREEN;
+  ctx.lineWidth   = 2;
+  setGlow(GREEN, 25);
+  ctx.strokeRect(6, 6, W - 12, H - 12);
+  clearGlow();
+
+  ctx.font = 'bold 11px monospace';
+  ctx.fillStyle = GREEN;
+  ctx.textAlign = 'center';
+  setGlow(GREEN, 12);
+  ctx.fillText('COMPLETE', W / 2, H / 2);
+  clearGlow();
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Main Render Loop ───────────────────────────
+function render() {
+  rafHandle = requestAnimationFrame(render);
+  tick++;
+
+  // Smooth audio
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.3  + audioLevel * 0.7
+    : smoothAudio * 0.93 + audioLevel * 0.07;
+
+  // Fade in/out
+  if (active && fadeProgress < 1)
+    fadeProgress = Math.min(1, fadeProgress + 0.05);
+  if (!active && fadeProgress > 0)
+    fadeProgress = Math.max(0, fadeProgress - 0.025);
+
+  // Draw-in animation (elements reveal)
+  if (active && drawIn < 1)
+    drawIn = Math.min(1, drawIn + 0.04);
+  if (!active && drawIn > 0)
+    drawIn = Math.max(0, drawIn - 0.06);
+
+  // Processing smooth alpha
+  procAlpha = processing
+    ? Math.min(1, procAlpha + 0.08)
+    : Math.max(0, procAlpha - 0.06);
+
+  // Error smooth alpha
+  errorAlpha = errorState
+    ? Math.min(1, errorAlpha + 0.12)
+    : Math.max(0, errorAlpha - 0.06);
+
+  // Celebration decay
+  if (celebAlpha > 0)
+    celebAlpha = Math.max(0, celebAlpha - 0.025);
+
+  // Scan line advance
+  const scanSpeed = processing ? 0.012 : 0.006 + smoothAudio * 0.008;
+  scanPos = (scanPos + scanSpeed) % 1;
+
+  // Rotation speed
+  const rotSpeed = processing
+    ? 0.045 + smoothAudio * 0.04
+    : 0.012 + smoothAudio * 0.025;
+  rotAngle += rotSpeed;
+
+  // Stop RAF when fully hidden and nothing to show
+  if (fadeProgress < 0.01 && errorAlpha < 0.01 && celebAlpha < 0.01) {
+    if (!active && !errorState) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+      ctx.clearRect(0, 0, W, H);
+      return;
+    }
+  }
+
+  // ── Draw ────────────────────────────────────
+  ctx.clearRect(0, 0, W, H);
+
+  // Derive active color based on state
+  const mainColor = errorState || errorAlpha > 0.1
+    ? RED
+    : procAlpha > 0.5
+      ? AMBER
+      : CYAN;
+
+  // Blended color for transitions
+  let r = 0, g = 255, b = 255; // cyan
+  if (procAlpha > 0) {
+    r = Math.round(r + procAlpha * (255 - r));
+    g = Math.round(g + procAlpha * (170 - g));
+    b = Math.round(b + procAlpha * (0   - b));
+  }
+  if (errorAlpha > 0) {
+    r = Math.round(r + errorAlpha * (255 - r));
+    g = Math.round(g + errorAlpha * (34  - g));
+    b = Math.round(b + errorAlpha * (34  - b));
+  }
+  const activeColor = `rgb(${r},${g},${b})`;
+
+  // Corner size and audio expansion
+  const cornerSize  = 28;
+  const audioExpand = smoothAudio * 14;
+
+  // Margin from edges
+  const M = 18;
+
+  // Edge ruler marks
+  drawEdgeRulers(drawIn, activeColor);
+
+  // Scan line (top edge)
+  drawScanLine(drawIn, activeColor, scanSpeed);
+
+  // TL corner bracket + data label
+  drawCornerBracket(M, M, cornerSize, 'tl', drawIn, activeColor, audioExpand);
+  drawTopLeftData(M + 4, M + cornerSize + 16, drawIn, activeColor, processing, errorState);
+
+  // TR corner — rotating arc
+  drawCornerBracket(W - M, M, cornerSize, 'tr', drawIn, activeColor, audioExpand);
+  drawRotatingArc(W - M, M, cornerSize * 0.55, rotAngle, drawIn, activeColor, rotSpeed);
+
+  // BL corner — audio meter
+  drawCornerBracket(M, H - M, cornerSize, 'bl', drawIn, activeColor, audioExpand);
+  drawAudioMeter(M + 2, H - M - 42, cornerSize * 2.8, smoothAudio, drawIn, activeColor);
+
+  // BR corner — status
+  drawCornerBracket(W - M, H - M, cornerSize, 'br', drawIn, activeColor, audioExpand);
+  drawStatusReadout(W - M - 4, H - M - 32, drawIn, activeColor, processing, errorState);
+
+  // Overlays
+  drawErrorOverlay(errorAlpha);
+  drawCelebration(celebAlpha);
+}
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── Public API ────────────────────────────────
+window.setAudioLevel = (v) => {
+  audioLevel = Math.max(0, Math.min(1, v));
+};
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) {
+    smoothAudio = 0;
+  } else {
+    ensureRafRunning();
+  }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  errorState = on;
+  if (on) ensureRafRunning();
+};
+
+window.setCelebration = () => {
+  celebAlpha = 1;
+  ensureRafRunning();
+};
+
+// Start immediately so initial state is ready
+render();
+</script>
+</body></html>

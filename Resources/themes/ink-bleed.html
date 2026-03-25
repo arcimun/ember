@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Ink Bleed — Watercolor edge shader overlay
+// Indigo → rose → gold, organic ink simulation
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let errorFlash = 0, celebrationFlash = 0;
+let burstAccum = 0, lastBurstTime = 0;
+let rafHandle = null;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+// ── Shaders ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudio;
+uniform float uFade;
+uniform float uProcessing;
+uniform float uError;
+uniform float uCelebration;
+uniform float uBurst;
+uniform vec2 uRes;
+
+// ── Simplex 3D noise ──
+vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314*r; }
+
+float snoise(vec3 v) {
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + 2.0*C.xxx;
+  vec3 x3 = x0 - 1.0 + 3.0*C.xxx;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+    + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+    + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 1.0/7.0;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0*floor(p*ns.z*ns.z);
+  vec4 x_ = floor(j*ns.z);
+  vec4 y_ = floor(j - 7.0*x_);
+  vec4 x = x_*ns.x + ns.yyyy;
+  vec4 y = y_*ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m*m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+
+// ── FBM (fractal brownian motion) for watercolor texture ──
+float fbm(vec3 p) {
+  float v = 0.0, a = 0.5;
+  vec3 shift = vec3(100.0);
+  for (int i = 0; i < 5; i++) {
+    v += a * snoise(p);
+    p = p * 2.0 + shift;
+    a *= 0.5;
+  }
+  return v;
+}
+
+// ── Watercolor edge function with organic bleeding ──
+float watercolorEdge(vec2 uv, vec2 aspect, float t, float audio, float proc) {
+  // Distance from each edge
+  float dT = uv.y;
+  float dB = 1.0 - uv.y;
+  float dL = uv.x;
+  float dR = 1.0 - uv.x;
+
+  // Pixel-space edge distance (150px band)
+  float edgePx = 150.0 / max(uRes.y, 1.0);
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Processing retracts ink toward corners
+  float retract = proc * 0.6;
+  float depth = edgePx * (1.0 - retract) + audio * edgePx * 0.5;
+
+  // Corner proximity boost (ink pools in corners)
+  float cornerDist = length(vec2(min(dL, dR), min(dT, dB)));
+  float cornerBoost = 1.0 - smoothstep(0.0, edgePx * 2.5, cornerDist);
+
+  // Base ink shape
+  float ink = 1.0 - smoothstep(0.0, depth, dEdge);
+  ink = max(ink, cornerBoost * 0.7 * (1.0 - smoothstep(0.0, edgePx * 1.8, cornerDist)));
+
+  // Organic watercolor bleeding — multi-scale noise distortion
+  vec2 nc = uv * aspect;
+  float slow = t * 0.15;
+  float med = t * 0.3;
+
+  // Large-scale bleed tendrils
+  float n1 = fbm(vec3(nc * 2.5, slow));
+  // Medium watercolor texture
+  float n2 = fbm(vec3(nc * 5.0 + 33.0, med));
+  // Fine granulation (paper texture)
+  float n3 = snoise(vec3(nc * 18.0, t * 0.5 + 77.0)) * 0.5 + 0.5;
+
+  // Audio drives bleed intensity — louder = more organic spreading
+  float bleedStr = 0.3 + audio * 1.2;
+  float bleed = n1 * 0.5 + n2 * 0.35 + n3 * 0.15;
+  bleed = bleed * bleedStr;
+
+  // Extend ink with organic bleeding
+  float bleedZone = depth * 2.0;
+  float bleedMask = 1.0 - smoothstep(0.0, bleedZone, dEdge);
+  ink = ink + bleed * bleedMask * 0.6;
+
+  // Watercolor paper granulation — subtle texture everywhere ink exists
+  float grain = n3 * 0.15;
+  ink = ink * (1.0 - grain * 0.3);
+
+  // Audio burst: each sound pushes ink further
+  float burstWave = audio * audio;
+  float burstNoise = snoise(vec3(nc * 3.0, t * 2.0)) * 0.5 + 0.5;
+  ink += burstWave * burstNoise * bleedMask * 0.4;
+
+  // Soft feathered edges (watercolor diffusion)
+  ink *= smoothstep(0.0, 0.02, ink);
+
+  return clamp(ink, 0.0, 1.0);
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 aspect = vec2(uRes.x / uRes.y, 1.0);
+  float t = uTime;
+
+  float ink = watercolorEdge(uv, aspect, t, uAudio, uProcessing);
+
+  // ── COLOR PALETTE: Indigo → Rose → Gold ──
+  // Volume maps saturation: quiet = pastel, loud = saturated
+  float sat = 0.3 + uAudio * 0.7;  // 0.3 (pastel) to 1.0 (vivid)
+
+  // Noise-driven color variation across the surface
+  vec2 nc = uv * aspect;
+  float colorNoise1 = snoise(vec3(nc * 1.5, t * 0.08)) * 0.5 + 0.5;
+  float colorNoise2 = snoise(vec3(nc * 2.0 + 50.0, t * 0.12)) * 0.5 + 0.5;
+  float colorNoise3 = snoise(vec3(nc * 3.0 + 100.0, t * 0.06)) * 0.5 + 0.5;
+
+  // Base palette (pastel versions)
+  vec3 indigoPastel = vec3(0.55, 0.52, 0.78);
+  vec3 rosePastel   = vec3(0.78, 0.55, 0.65);
+  vec3 goldPastel   = vec3(0.80, 0.72, 0.50);
+
+  // Saturated versions
+  vec3 indigoVivid = vec3(0.18, 0.10, 0.55);
+  vec3 roseVivid   = vec3(0.72, 0.15, 0.35);
+  vec3 goldVivid   = vec3(0.85, 0.65, 0.12);
+
+  // Interpolate pastel → vivid based on volume
+  vec3 indigo = mix(indigoPastel, indigoVivid, sat);
+  vec3 rose   = mix(rosePastel, roseVivid, sat);
+  vec3 gold   = mix(goldPastel, goldVivid, sat);
+
+  // Blend colors organically across the surface
+  vec3 color = indigo;
+  color = mix(color, rose, smoothstep(0.3, 0.7, colorNoise1));
+  color = mix(color, gold, smoothstep(0.5, 0.85, colorNoise2) * 0.6);
+
+  // Add warm highlights at ink intensity peaks
+  vec3 highlight = mix(vec3(0.75, 0.65, 0.82), vec3(0.95, 0.80, 0.50), colorNoise3);
+  color = mix(color, highlight, ink * ink * 0.3);
+
+  // ── Watercolor wet-edge darkening ──
+  // Classic watercolor: pigment concentrates at bleed edges
+  float edgeDark = smoothstep(0.05, 0.35, ink) * (1.0 - smoothstep(0.35, 0.7, ink));
+  color *= (1.0 - edgeDark * 0.25);
+
+  // ── Error: red ink flash ──
+  vec3 errorRed = vec3(0.85, 0.12, 0.15);
+  color = mix(color, errorRed, uError * 0.9);
+  ink = max(ink, uError * 0.7);
+
+  // ── Celebration: vibrant burst ──
+  float celebInk = uCelebration * 0.5;
+  vec3 celebColor = mix(gold, vec3(1.0, 0.85, 0.3), 0.5);
+  color = mix(color, celebColor, uCelebration * 0.6);
+  ink = max(ink, celebInk);
+
+  // ── Watercolor transparency layering ──
+  // Real watercolor has uneven opacity — thinner where paint spreads
+  float opacity = ink;
+  float thinning = snoise(vec3(nc * 8.0, t * 0.2 + 200.0)) * 0.5 + 0.5;
+  opacity *= (0.75 + thinning * 0.25);
+
+  // Processing: ink becomes more translucent as it retracts
+  opacity *= (1.0 - uProcessing * 0.3);
+
+  // Breathing — gentle organic pulse
+  float breath = 0.92 + 0.08 * sin(t * 0.35);
+  opacity *= breath;
+
+  // Apply master fade
+  opacity *= uFade;
+
+  // Ensure center is fully transparent — hard cutoff at edge band
+  float dT = uv.y;
+  float dB = 1.0 - uv.y;
+  float dL = uv.x;
+  float dR = 1.0 - uv.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+  float edgePx = 150.0 / max(uRes.y, 1.0);
+  float maxBand = edgePx * 2.5;
+  opacity *= 1.0 - smoothstep(maxBand * 0.5, maxBand, dEdge);
+
+  fragColor = vec4(color * opacity, opacity);
+}`;
+
+// ── Setup WebGL ──
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+// Full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uError = gl.getUniformLocation(prog, 'uError');
+const uCeleb = gl.getUniformLocation(prog, 'uCelebration');
+const uBurst = gl.getUniformLocation(prog, 'uBurst');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+
+let smoothError = 0, smoothCelebration = 0;
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  // Smooth audio — fast attack, slow release (watercolor inertia)
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.25 + audioLevel * 0.75
+    : smoothAudio * 0.94 + audioLevel * 0.06;
+
+  // Fade: ease in ~0.6s, ease out ~1.5s
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.045);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.018);
+
+  // Processing transition (slow — ink retracting)
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.04;
+
+  // Error flash decay
+  smoothError *= 0.94;
+
+  // Celebration flash decay
+  smoothCelebration *= 0.92;
+
+  // Burst accumulator from audio peaks
+  if (smoothAudio > 0.3) {
+    burstAccum = Math.min(1, burstAccum + smoothAudio * 0.05);
+  } else {
+    burstAccum *= 0.97;
+  }
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (fadeProgress > 0.005 || smoothError > 0.01 || smoothCelebration > 0.01) {
+    const t = performance.now() / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 2.5, 1.0));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform1f(uError, smoothError);
+    gl.uniform1f(uCeleb, smoothCelebration);
+    gl.uniform1f(uBurst, burstAccum);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    // Nothing visible and inactive — stop RAF to save battery
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── Public API (called from Swift) ──
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; burstAccum = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    smoothError = 1.0;
+    ensureRafRunning();
+    // Auto-decay handles the ~1 second fade
+  }
+};
+
+window.setCelebration = () => {
+  smoothCelebration = 1.0;
+  burstAccum = 1.0;
+  ensureRafRunning();
+};
+</script>
+</body></html>

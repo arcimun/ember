@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="c"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Circuit — PCB trace cyberpunk theme
+// Neon cyan traces with electricity flow on edges
+// Tron Legacy meets PCB solder points
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, dpr;
+let audioLevel = 0, smoothAudio = 0;
+let active = false, fadeProgress = 0;
+let processing = false, processingPulse = 0;
+let errorState = false, errorTimer = 0;
+let celebrationTimer = 0;
+let t = 0;
+
+// ── COLORS ──────────────────────────────────────
+const COLOR_CYAN    = { r: 0,   g: 255, b: 255 };
+const COLOR_MAGENTA = { r: 255, g: 0,   b: 255 };
+const COLOR_GOLD    = { r: 255, g: 200, b: 40  };
+const COLOR_RED     = { r: 255, g: 30,  b: 30  };
+const COLOR_GREEN   = { r: 0,   g: 255, b: 100 };
+
+function rgba(c, a) {
+  return `rgba(${c.r},${c.g},${c.b},${a})`;
+}
+function lerpColor(a, b, t) {
+  return {
+    r: Math.round(a.r + (b.r - a.r) * t),
+    g: Math.round(a.g + (b.g - a.g) * t),
+    b: Math.round(a.b + (b.b - a.b) * t),
+  };
+}
+
+// ── RESIZE ──────────────────────────────────────
+function resize() {
+  dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buildTraces();
+}
+window.onresize = resize;
+
+// ── CIRCUIT TRACE GENERATOR ─────────────────────
+// Traces live within EDGE_DEPTH pixels from any screen edge.
+const EDGE_DEPTH = 150;
+const NODE_RADIUS_BASE = 3.5;
+const TRACE_COUNT_BASE = 18;
+
+let traces = [];   // { points: [{x,y},...], totalLen, segLens }
+let nodes  = [];   // { x, y, pulse: 0..1 }
+
+// Seeded RNG so layout is deterministic per resize
+function seededRng(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (Math.imul(1664525, s) + 1013904223) | 0;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+function buildTraces() {
+  const rng = seededRng(W * 31 + H);
+  traces = [];
+  nodes  = [];
+  const nodeSet = new Set();
+
+  function addNode(x, y) {
+    const key = `${Math.round(x)},${Math.round(y)}`;
+    if (!nodeSet.has(key)) {
+      nodeSet.add(key);
+      nodes.push({ x, y, pulse: 0, phase: rng() * Math.PI * 2 });
+    }
+  }
+
+  // Helper: clamp a point to stay within the edge band
+  function clampToEdge(x, y) {
+    const cx = Math.max(EDGE_DEPTH, Math.min(W - EDGE_DEPTH, x));
+    const cy = Math.max(EDGE_DEPTH, Math.min(H - EDGE_DEPTH, y));
+    // If outside, snap to nearest edge band entry
+    if (cx !== x || cy !== y) {
+      // keep whichever edge is closer
+      const distT = y;
+      const distB = H - y;
+      const distL = x;
+      const distR = W - x;
+      const minD = Math.min(distT, distB, distL, distR);
+      if (minD === distT) return { x: Math.max(4, Math.min(W - 4, x)), y: Math.max(4, Math.min(EDGE_DEPTH - 4, y)) };
+      if (minD === distB) return { x: Math.max(4, Math.min(W - 4, x)), y: Math.min(H - 4, Math.max(H - EDGE_DEPTH + 4, y)) };
+      if (minD === distL) return { x: Math.max(4, Math.min(EDGE_DEPTH - 4, x)), y: Math.max(4, Math.min(H - 4, y)) };
+      return    { x: Math.min(W - 4, Math.max(W - EDGE_DEPTH + 4, x)), y: Math.max(4, Math.min(H - 4, y)) };
+    }
+    return { x, y };
+  }
+
+  // Generate traces starting from corners and edges
+  const corners = [
+    { x: 0, y: 0 }, { x: W, y: 0 },
+    { x: 0, y: H }, { x: W, y: H },
+  ];
+  const edgeStarts = [];
+  // Top & bottom midpoints
+  for (let i = 1; i <= 3; i++) {
+    edgeStarts.push({ x: W * i / 4, y: 0 });
+    edgeStarts.push({ x: W * i / 4, y: H });
+  }
+  // Left & right midpoints
+  for (let i = 1; i <= 3; i++) {
+    edgeStarts.push({ x: 0, y: H * i / 4 });
+    edgeStarts.push({ x: W, y: H * i / 4 });
+  }
+
+  const starts = [...corners, ...edgeStarts];
+
+  for (let i = 0; i < TRACE_COUNT_BASE; i++) {
+    const start = starts[i % starts.length];
+    const points = [{ x: start.x, y: start.y }];
+    addNode(start.x, start.y);
+
+    let cx = start.x;
+    let cy = start.y;
+    // Determine initial direction: move inward
+    let dx = cx < W / 2 ? 1 : -1;
+    let dy = cy < H / 2 ? 1 : -1;
+    // Alternate direction based on index
+    if (i % 2 === 0) { dx = 0; } else { dy = 0; }
+
+    const steps = 3 + Math.floor(rng() * 4);
+    for (let s = 0; s < steps; s++) {
+      const stepLen = 30 + rng() * (Math.min(W, H) * 0.12);
+      let nx = cx + dx * stepLen;
+      let ny = cy + dy * stepLen;
+      // Keep inside edge band
+      nx = Math.max(2, Math.min(W - 2, nx));
+      ny = Math.max(2, Math.min(H - 2, ny));
+      // Bounce back if entering center
+      const inEdge = nx < EDGE_DEPTH || nx > W - EDGE_DEPTH || ny < EDGE_DEPTH || ny > H - EDGE_DEPTH;
+      if (!inEdge) {
+        // Reverse toward nearest edge
+        const distT = cy, distB = H - cy, distL = cx, distR = W - cx;
+        const minD = Math.min(distT, distB, distL, distR);
+        if (minD === distT || minD === distB) { dy = -dy; nx = cx; ny = cy + dy * stepLen; }
+        else { dx = -dx; nx = cx + dx * stepLen; ny = cy; }
+        nx = Math.max(2, Math.min(W - 2, nx));
+        ny = Math.max(2, Math.min(H - 2, ny));
+      }
+      points.push({ x: nx, y: ny });
+      addNode(nx, ny);
+      cx = nx; cy = ny;
+      // 90° turn: swap directions
+      [dx, dy] = [dy * (rng() > 0.5 ? 1 : -1), dx * (rng() > 0.5 ? 1 : -1)];
+    }
+
+    // Compute segment lengths and total
+    const segLens = [];
+    let totalLen = 0;
+    for (let k = 1; k < points.length; k++) {
+      const dx2 = points[k].x - points[k-1].x;
+      const dy2 = points[k].y - points[k-1].y;
+      const len = Math.sqrt(dx2*dx2 + dy2*dy2);
+      segLens.push(len);
+      totalLen += len;
+    }
+
+    traces.push({
+      points,
+      segLens,
+      totalLen,
+      phase: rng() * Math.PI * 2,
+      sparkPos: rng(),        // normalized 0..1 along trace
+      sparkSpeed: 0.15 + rng() * 0.35,
+      sparkActive: false,
+    });
+  }
+}
+
+// ── DRAWING HELPERS ─────────────────────────────
+
+function getPointAlongTrace(trace, t01) {
+  const target = t01 * trace.totalLen;
+  let acc = 0;
+  for (let i = 0; i < trace.segLens.length; i++) {
+    const seg = trace.segLens[i];
+    if (acc + seg >= target) {
+      const frac = (target - acc) / seg;
+      const p0 = trace.points[i];
+      const p1 = trace.points[i + 1];
+      return {
+        x: p0.x + (p1.x - p0.x) * frac,
+        y: p0.y + (p1.y - p0.y) * frac,
+      };
+    }
+    acc += seg;
+  }
+  return trace.points[trace.points.length - 1];
+}
+
+function drawTrace(trace, color, alpha, glowSize, lineWidth) {
+  if (trace.points.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = rgba(color, 1);
+  ctx.lineWidth = lineWidth || 1.5;
+  ctx.lineCap = 'square';
+  ctx.lineJoin = 'miter';
+
+  // Glow pass
+  if (glowSize > 0) {
+    ctx.shadowColor = rgba(color, 0.9);
+    ctx.shadowBlur  = glowSize;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(trace.points[0].x, trace.points[0].y);
+  for (let i = 1; i < trace.points.length; i++) {
+    ctx.lineTo(trace.points[i].x, trace.points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawNode(node, color, alpha, radius, glowSize) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = rgba(color, 0.9);
+  ctx.shadowBlur  = glowSize;
+
+  // Outer ring
+  ctx.strokeStyle = rgba(color, 0.9);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Inner fill
+  ctx.fillStyle = rgba(color, 0.4);
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawElectricity(trace, pos, color, alpha, intensity) {
+  if (!trace.points.length) return;
+  const pt = getPointAlongTrace(trace, pos);
+  const size = 4 + intensity * 6;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Bright core dot
+  const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, size * 2);
+  grad.addColorStop(0, rgba(color, 1));
+  grad.addColorStop(0.3, rgba(color, 0.7));
+  grad.addColorStop(1, rgba(color, 0));
+  ctx.fillStyle = grad;
+  ctx.shadowColor = rgba(color, 1);
+  ctx.shadowBlur  = size * 3;
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, size, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ── MAIN RENDER ─────────────────────────────────
+let rafHandle = null;
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  // Audio smoothing: fast attack, slow decay
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.25 + audioLevel * 0.75
+    : smoothAudio * 0.92 + audioLevel * 0.08;
+
+  // Fade
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.05);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.025);
+
+  // Timers
+  t = performance.now() / 1000;
+  if (processing) processingPulse = (processingPulse + 0.04) % (Math.PI * 2);
+  if (errorTimer > 0) errorTimer = Math.max(0, errorTimer - 1/60);
+  if (celebrationTimer > 0) celebrationTimer = Math.max(0, celebrationTimer - 1/60);
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  if (fadeProgress < 0.01 && !active) {
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+    return;
+  }
+
+  const audio = Math.min(smoothAudio * 2.5, 1);
+  const globalAlpha = fadeProgress;
+
+  // How many traces are "on" based on audio
+  const activeTraceCount = Math.max(4, Math.floor(traces.length * (0.3 + audio * 0.7)));
+
+  // ── Choose color based on state ──
+  let traceColor, nodeColor, sparkColor;
+  if (errorTimer > 0) {
+    const ef = Math.min(errorTimer / 0.3, 1);
+    traceColor = lerpColor(COLOR_CYAN, COLOR_RED, ef * Math.abs(Math.sin(t * 20)));
+    nodeColor  = lerpColor(COLOR_CYAN, COLOR_RED, ef);
+    sparkColor = COLOR_RED;
+  } else if (processing) {
+    const pf = 0.5 + 0.5 * Math.sin(processingPulse);
+    traceColor = lerpColor(COLOR_CYAN, COLOR_GOLD, 0.5 + pf * 0.5);
+    nodeColor  = lerpColor(COLOR_CYAN, COLOR_GOLD, pf);
+    sparkColor = COLOR_GOLD;
+  } else {
+    traceColor = COLOR_CYAN;
+    nodeColor  = COLOR_MAGENTA;
+    sparkColor = COLOR_CYAN;
+  }
+
+  // Celebration boost
+  const celebBoost = celebrationTimer > 0 ? Math.min(celebrationTimer / 0.15, 1) : 0;
+  const totalBoost  = Math.max(audio, celebBoost);
+
+  // ── Draw dim base traces (always visible when active) ──
+  for (let i = 0; i < traces.length; i++) {
+    const tr = traces[i];
+    const isLit = i < activeTraceCount;
+    const dimAlpha = isLit ? (0.15 + totalBoost * 0.2) : 0.06;
+    drawTrace(tr, traceColor, dimAlpha * globalAlpha, 0, 1);
+  }
+
+  // ── Draw bright lit traces ──
+  for (let i = 0; i < activeTraceCount; i++) {
+    const tr = traces[i];
+    const tracePhaseFrac = (Math.sin(t * 1.2 + tr.phase) + 1) / 2;
+    const traceAlpha = (0.4 + tracePhaseFrac * 0.3 + totalBoost * 0.35) * globalAlpha;
+    const glowSize = 4 + totalBoost * 12 + celebBoost * 10;
+    drawTrace(tr, traceColor, traceAlpha, glowSize, 1.5 + totalBoost * 1.5);
+  }
+
+  // ── Processing: synchronized wave sweep ──
+  if (processing) {
+    const wave = (processingPulse / (Math.PI * 2)); // 0..1
+    for (let i = 0; i < activeTraceCount; i++) {
+      const tr = traces[i];
+      const waveAlpha = Math.max(0, Math.sin((wave + i / activeTraceCount) * Math.PI * 2)) * 0.5;
+      if (waveAlpha > 0.05) {
+        drawTrace(tr, COLOR_GOLD, waveAlpha * globalAlpha, 8 + waveAlpha * 12, 2);
+      }
+    }
+  }
+
+  // ── Animate electricity sparks ──
+  const sparkSpeed = 0.15 + totalBoost * 0.55;
+  for (let i = 0; i < activeTraceCount; i++) {
+    const tr = traces[i];
+    // Advance spark
+    tr.sparkPos = (tr.sparkPos + sparkSpeed * tr.sparkSpeed / 60) % 1;
+
+    const sparkAlpha = (0.7 + totalBoost * 0.35) * globalAlpha;
+    drawElectricity(tr, tr.sparkPos, sparkColor, sparkAlpha, totalBoost);
+
+    // Second trailing spark for active traces when audio is high
+    if (audio > 0.5) {
+      const trailPos = (tr.sparkPos - 0.08 + 1) % 1;
+      drawElectricity(tr, trailPos, traceColor, sparkAlpha * 0.45, totalBoost * 0.6);
+    }
+  }
+
+  // ── Nodes ──
+  for (let i = 0; i < nodes.length; i++) {
+    const nd = nodes[i];
+    // Pulse based on audio + individual phase
+    nd.pulse = 0.3 + 0.4 * ((Math.sin(t * 2.5 + nd.phase) + 1) / 2) + totalBoost * 0.35;
+    const radius = NODE_RADIUS_BASE * (1 + totalBoost * 0.8 + celebBoost * 0.6);
+    const glowNode = 3 + totalBoost * 10 + celebBoost * 8;
+    const nodeAlpha = nd.pulse * globalAlpha;
+
+    // Alternate cyan/magenta for visual interest
+    const col = i % 3 === 0 ? nodeColor : traceColor;
+    drawNode(nd, col, nodeAlpha, radius, glowNode);
+  }
+
+  // ── Celebration: corner flash nodes ──
+  if (celebBoost > 0) {
+    for (let i = 0; i < traces.length; i++) {
+      drawTrace(traces[i], COLOR_CYAN, celebBoost * 0.7 * globalAlpha, 20 * celebBoost, 2.5);
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const nd = nodes[i];
+      const sparkle = Math.abs(Math.sin(t * 30 + i)) * celebBoost;
+      drawNode(nd, COLOR_CYAN, sparkle * globalAlpha, NODE_RADIUS_BASE * 2.5, 18 * celebBoost);
+    }
+  }
+
+  // ── Error: red flash overlay ──
+  if (errorTimer > 0) {
+    const ef = Math.min(errorTimer / 0.15, 1);
+    const flicker = Math.abs(Math.sin(t * 35)) * ef;
+    ctx.save();
+    ctx.globalAlpha = flicker * 0.3;
+    ctx.strokeStyle = rgba(COLOR_RED, 1);
+    ctx.lineWidth = 6;
+    ctx.shadowColor = rgba(COLOR_RED, 0.9);
+    ctx.shadowBlur  = 30;
+    ctx.strokeRect(3, 3, W - 6, H - 6);
+    ctx.restore();
+  }
+}
+
+// ── INITIAL SETUP ────────────────────────────────
+resize();
+render();
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── PUBLIC API ───────────────────────────────────
+window.setAudioLevel = (v) => {
+  audioLevel = Math.max(0, Math.min(1, v));
+};
+
+window.setActive = (on) => {
+  active = !!on;
+  if (!on) {
+    smoothAudio = 0;
+    audioLevel  = 0;
+  } else {
+    ensureRafRunning();
+  }
+};
+
+window.setProcessing = (on) => {
+  processing = !!on;
+  if (on) {
+    processingPulse = 0;
+    ensureRafRunning();
+  }
+};
+
+window.setError = (on) => {
+  if (on) {
+    errorTimer = 1.0;
+    ensureRafRunning();
+  } else {
+    errorTimer = 0;
+  }
+};
+
+window.setCelebration = () => {
+  celebrationTimer = 0.6;
+  ensureRafRunning();
+};
+</script>
+</body></html>

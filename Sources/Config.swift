@@ -34,7 +34,7 @@ enum LLMCorrectionMode: String {
 struct Config {
     var groqKey: String = ""
     var language: String = "auto"
-    var theme: String = "violet-flame"
+    var theme: String = "digital-rain"
     var endDelay: Double = 0.8
     var llmCorrection: LLMCorrectionMode = .never
     var vadAutoStop: Bool = false

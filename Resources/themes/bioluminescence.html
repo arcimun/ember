@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Bioluminescence — Deep ocean edge overlay
+// Deep sea blue → electric cyan → soft pink
+// Transparent center, organisms on edges only
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H;
+let audioLevel = 0, smoothAudio = 0;
+let active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let rafHandle = null;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+// ── Vertex Shader ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+// ── Fragment Shader ──
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudio;
+uniform float uFade;
+uniform float uProcessing;
+uniform vec2  uRes;
+
+// ── Simplex noise 3D ──
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0);const vec4 D=vec4(0,0.5,1,2);
+  vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.0-g;
+  vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+2.0*C.xxx;vec3 x3=x0-1.0+3.0*C.xxx;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0,i1.z,i2.z,1))+i.y+vec4(0,i1.y,i2.y,1))+i.x+vec4(0,i1.x,i2.x,1));
+  float n_=1.0/7.0;vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;
+  vec4 h=1.0-abs(x)-abs(y);vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0;vec4 s1=floor(b1)*2.0+1.0;
+  vec4 sh=-step(h,vec4(0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+  vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);
+  m=m*m;return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}
+
+// ── Bioluminescent organism glow at a point ──
+// Returns intensity in [0,1]: smooth disc with soft halo
+float organism(vec2 uv, vec2 center, float radius) {
+  float d = length(uv - center);
+  float core = smoothstep(radius, radius * 0.3, d);
+  float halo = smoothstep(radius * 2.8, radius * 0.6, d) * 0.35;
+  return core + halo;
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 aspect = vec2(uRes.x / uRes.y, 1.0);
+  vec2 uvA = vec2(uv.x * aspect.x, uv.y); // aspect-corrected
+
+  // ── Edge mask: only render near edges, transparent center ──
+  float dT = uv.y;
+  float dB = 1.0 - uv.y;
+  float dL = uv.x;
+  float dR = 1.0 - uv.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Edge depth: 9-14% + audio breathing
+  float depth = 0.09 + uAudio * 0.05;
+
+  // Hard cutoff mask — center is fully transparent
+  float edgeMask = 1.0 - smoothstep(0.0, depth, dEdge);
+
+  // ── Background glow layer — deep sea ambient ──
+  float speed = 0.18 + uAudio * 0.25;
+  float n1 = snoise(vec3(uvA * 3.0, uTime * speed)) * 0.5 + 0.5;
+  float n2 = snoise(vec3(uvA * 6.0, uTime * speed * 1.4 + 3.0)) * 0.5 + 0.5;
+  float n3 = snoise(vec3(uvA * 12.0, uTime * speed * 2.0 + 7.0)) * 0.5 + 0.5;
+
+  float bgGlow = n1 * 0.5 + n2 * 0.35 + n3 * 0.15;
+  bgGlow *= edgeMask;
+
+  // ── Organism layer: jellyfish blobs ──
+  // Each organism orbits along the edge with noise-driven drift
+  float orgTotal = 0.0;
+  float orgPink  = 0.0;  // per-channel pink contribution
+
+  // 8 larger jellyfish organisms — slow drift, audio-reactive size
+  float baseSize = 0.028 + uAudio * 0.022;
+  for (int i = 0; i < 8; i++) {
+    float fi = float(i);
+    float phase = fi * 1.618 + 0.5;   // golden ratio spread
+
+    // Drift along edges: parametric edge position
+    float edgeParam = fract(phase * 0.31 + uTime * (0.012 + uAudio * 0.018) * (0.8 + fi * 0.07));
+    float wobbleX = snoise(vec3(fi * 7.3, uTime * 0.11, 0.0)) * 0.015;
+    float wobbleY = snoise(vec3(fi * 5.1, uTime * 0.13, 2.0)) * 0.015;
+
+    vec2 pos;
+    float sideT = fract(phase * 1.27);
+    // Distribute across 4 edges
+    if (sideT < 0.25) {
+      // Top edge
+      pos = vec2(fract(edgeParam * 4.0), 0.0 + wobbleY * 0.5 + 0.01);
+    } else if (sideT < 0.5) {
+      // Bottom edge
+      pos = vec2(fract(edgeParam * 4.0 + 0.5), 1.0 + wobbleY * 0.5 - 0.01);
+    } else if (sideT < 0.75) {
+      // Left edge
+      pos = vec2(0.0 + wobbleX * 0.5 + 0.01, fract(edgeParam * 4.0 + 0.25));
+    } else {
+      // Right edge
+      pos = vec2(1.0 + wobbleX * 0.5 - 0.01, fract(edgeParam * 4.0 + 0.75));
+    }
+
+    // Pulse: each organism breathes at its own rhythm
+    float pulse = 0.75 + 0.25 * sin(uTime * 1.2 + fi * 2.4);
+    float sz = baseSize * pulse * (0.7 + uAudio * 0.6);
+
+    float g = organism(uv, pos, sz);
+    orgTotal += g;
+
+    // Pink tinting for alternating organisms
+    if (mod(fi, 2.0) > 0.5) orgPink += g * 0.6;
+  }
+
+  // 16 small plankton particles — faster, tighter
+  float plankSize = 0.008 + uAudio * 0.006;
+  float plankTotal = 0.0;
+  for (int i = 0; i < 16; i++) {
+    float fi = float(i);
+    float phase2 = fi * 0.839 + 1.2;
+    float edgeP2 = fract(phase2 * 0.47 + uTime * (0.022 + uAudio * 0.03) * (0.9 + fi * 0.04));
+
+    float wobX = snoise(vec3(fi * 3.7, uTime * 0.22, 1.0)) * 0.012;
+    float wobY = snoise(vec3(fi * 2.9, uTime * 0.19, 3.0)) * 0.012;
+
+    vec2 pos2;
+    float side2 = fract(phase2 * 0.93);
+    if (side2 < 0.25) {
+      pos2 = vec2(fract(edgeP2 * 4.0 + 0.12), 0.0 + abs(wobY) + 0.004);
+    } else if (side2 < 0.5) {
+      pos2 = vec2(fract(edgeP2 * 4.0 + 0.62), 1.0 - abs(wobY) - 0.004);
+    } else if (side2 < 0.75) {
+      pos2 = vec2(0.0 + abs(wobX) + 0.004, fract(edgeP2 * 4.0 + 0.37));
+    } else {
+      pos2 = vec2(1.0 - abs(wobX) - 0.004, fract(edgeP2 * 4.0 + 0.87));
+    }
+
+    float flicker = 0.5 + 0.5 * sin(uTime * 3.1 + fi * 1.7);
+    float g2 = organism(uv, pos2, plankSize * (0.6 + flicker * 0.4));
+    plankTotal += g2;
+  }
+
+  // Clamp organism layers
+  orgTotal   = clamp(orgTotal,   0.0, 1.0);
+  plankTotal = clamp(plankTotal, 0.0, 1.0);
+  orgPink    = clamp(orgPink,    0.0, 1.0);
+
+  // Apply edge mask to organisms too — they should stay near edges
+  orgTotal   *= edgeMask;
+  plankTotal *= edgeMask;
+
+  // ── Processing: cluster pulse & warm cyan shift ──
+  float pm = uProcessing;
+  // Processing adds a synchronized radial pulse from edges
+  float procPulse = pm * (0.5 + 0.5 * sin(uTime * 3.5)) * edgeMask;
+
+  // ── Color palette ──
+  // Deep sea: #001a33 → electric cyan: #00e5ff → soft pink: #ff69b4
+  vec3 deepOcean  = vec3(0.0,   0.10,  0.20);   // #001a33
+  vec3 seaBlue    = vec3(0.0,   0.42,  0.65);   // mid ocean
+  vec3 elecCyan   = vec3(0.0,   0.898, 1.0);    // #00e5ff
+  vec3 softPink   = vec3(1.0,   0.412, 0.706);  // #ff69b4
+  vec3 warmCyan   = vec3(0.0,   0.85,  0.88);   // processing tint
+
+  // Background glow: deep ocean → sea blue
+  float bgT = bgGlow * (0.6 + uAudio * 0.4);
+  vec3 bgColor = mix(deepOcean, seaBlue, bgT * 0.7);
+
+  // Organisms: cyan → pink blend
+  vec3 orgColor = mix(elecCyan, softPink, orgPink * 0.55);
+
+  // Processing: shift towards warm cyan
+  orgColor = mix(orgColor, warmCyan, pm * 0.7);
+  bgColor  = mix(bgColor,  warmCyan * 0.4, pm * 0.5);
+
+  // Plankton: pure cyan with slight pink variation
+  vec3 plankColor = mix(elecCyan, softPink, n3 * 0.3);
+  plankColor = mix(plankColor, warmCyan, pm * 0.6);
+
+  // ── Compose layers ──
+  // Breathing pulse
+  float breath = 0.82 + 0.18 * sin(uTime * 0.35);
+
+  // Background ambient alpha
+  float bgAlpha  = bgGlow * 0.38 * (0.7 + uAudio * 0.3) * breath;
+  // Organism alpha: direct glow
+  float orgAlpha = orgTotal * (0.55 + uAudio * 0.4) * breath;
+  // Plankton: dimmer, more numerous
+  float plkAlpha = plankTotal * (0.45 + uAudio * 0.35) * breath;
+  // Processing pulse contribution
+  float procAlpha = procPulse * 0.5;
+
+  // Merge: alpha blending layered from back to front
+  // 1. bg glow
+  vec3 finalColor = bgColor;
+  float finalAlpha = bgAlpha;
+
+  // 2. plankton over bg
+  float pa = plkAlpha * (1.0 - finalAlpha);
+  finalColor = mix(finalColor, plankColor, plkAlpha);
+  finalAlpha = finalAlpha + pa;
+
+  // 3. organisms over plankton
+  float oa = orgAlpha * (1.0 - finalAlpha);
+  finalColor = mix(finalColor, orgColor, orgAlpha);
+  finalAlpha = clamp(finalAlpha + oa, 0.0, 1.0);
+
+  // 4. processing overlay
+  finalColor = mix(finalColor, warmCyan, procAlpha * 0.4);
+  finalAlpha = clamp(finalAlpha + procAlpha * 0.3, 0.0, 1.0);
+
+  // Apply global fade
+  finalAlpha *= uFade;
+
+  // Premultiply
+  fragColor = vec4(finalColor * finalAlpha, finalAlpha);
+}`;
+
+// ── Setup WebGL ──
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error('Program link error:', gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+// Full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+// Uniforms
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+// ── Render loop ──
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  // Smooth audio: fast attack, slow decay
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.3 + audioLevel * 0.7      // attack 0.7
+    : smoothAudio * 0.93 + audioLevel * 0.07;   // decay 0.93
+
+  // Fade: fast in ~0.5s, slow out ~1.5s
+  if (active  && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.06);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.02);
+
+  // Processing mode smooth transition
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.05;
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (fadeProgress > 0.01) {
+    const t = performance.now() / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 2.5, 1.0));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    // Nothing to render and overlay is hidden — stop RAF to save battery
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+// Restart RAF if loop was stopped
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── JS API ──
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;border:5px solid rgba(255,50,50,0.9);box-shadow:inset 0 0 50px rgba(255,0,0,0.35);z-index:9999;transition:opacity 0.15s;';
+    document.body.appendChild(overlay);
+    setTimeout(() => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 750);
+  }
+};
+
+window.setCelebration = () => {
+  ensureRafRunning();
+  const el = document.createElement('div');
+  // Cyan bioluminescent burst — matches the theme palette
+  el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;border:4px solid rgba(0,229,255,0.0);box-shadow:inset 0 0 80px rgba(0,229,255,0.0),0 0 40px rgba(0,229,255,0.0);transition:none;';
+  document.body.appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.transition = 'border-color 0.07s ease-out, box-shadow 0.07s ease-out';
+    el.style.borderColor = 'rgba(0,229,255,0.85)';
+    el.style.boxShadow   = 'inset 0 0 100px rgba(0,229,255,0.50), 0 0 50px rgba(255,105,180,0.30)';
+    setTimeout(() => {
+      el.style.transition = 'border-color 0.5s ease-in, box-shadow 0.5s ease-in';
+      el.style.borderColor = 'rgba(0,229,255,0.0)';
+      el.style.boxShadow   = 'inset 0 0 80px rgba(0,229,255,0.0)';
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 550);
+    }, 110);
+  });
+};
+</script>
+</body></html>

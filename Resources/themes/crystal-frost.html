@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Crystal Frost — Ice crystals from screen edges
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0, processing = false;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform float uTime, uAudio, uFade, uProcessing;
+uniform vec2 uRes;
+
+// ── Hash functions ──
+vec2 hash2(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+}
+
+float hash1(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// ── Simplex-like gradient noise ──
+float gnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(dot(hash2(i + vec2(0,0)), f - vec2(0,0)),
+                 dot(hash2(i + vec2(1,0)), f - vec2(1,0)), u.x),
+             mix(dot(hash2(i + vec2(0,1)), f - vec2(0,1)),
+                 dot(hash2(i + vec2(1,1)), f - vec2(1,1)), u.x), u.y);
+}
+
+// ── FBM for frost texture ──
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+  for (int i = 0; i < 6; i++) {
+    v += a * gnoise(p);
+    p = rot * p * 2.0;
+    a *= 0.5;
+  }
+  return v;
+}
+
+// ── Voronoi for crystal cell structure ──
+float voronoi(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float md = 8.0;
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      vec2 nb = vec2(float(x), float(y));
+      vec2 o = hash2(i + nb) * 0.5 + 0.5;
+      float d = length(nb + o - f);
+      md = min(md, d);
+    }
+  return md;
+}
+
+// ── Second-order Voronoi for crystal veins ──
+float voronoiEdge(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float md1 = 8.0, md2 = 8.0;
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      vec2 nb = vec2(float(x), float(y));
+      vec2 o = hash2(i + nb) * 0.5 + 0.5;
+      float d = length(nb + o - f);
+      if (d < md1) { md2 = md1; md1 = d; }
+      else if (d < md2) { md2 = d; }
+    }
+  return md2 - md1;
+}
+
+// ── Frost branching pattern (dendrite simulation) ──
+float frostBranch(vec2 p, float t) {
+  // Multiple rotated layers of sharp noise = dendritic branching
+  float v = 0.0;
+  float scale = 1.0;
+  float amp = 1.0;
+  // Six-fold symmetry like real ice crystals
+  for (int i = 0; i < 4; i++) {
+    float angle = float(i) * 1.0472 + t * 0.05; // 60 degree increments
+    mat2 r = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
+    vec2 rp = r * p * scale;
+    // Sharp ridges via abs(noise) = crystal veins
+    float n = abs(gnoise(rp));
+    n = pow(1.0 - n, 3.0); // sharpen into bright ridges
+    v += n * amp;
+    scale *= 2.2;
+    amp *= 0.45;
+  }
+  return v;
+}
+
+// ── Diamond sparkle ──
+float sparkle(vec2 p, float t) {
+  vec2 cell = floor(p);
+  vec2 f = fract(p);
+  float brightness = 0.0;
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      vec2 nb = vec2(float(x), float(y));
+      vec2 id = cell + nb;
+      float h = hash1(id);
+      float phase = h * 6.283 + t * (2.0 + h * 3.0);
+      float flash = pow(max(sin(phase), 0.0), 40.0);
+      vec2 pos = nb + hash2(id) * 0.5 + 0.5 - f;
+      float d = length(pos);
+      // Star shape
+      float angle = atan(pos.y, pos.x);
+      float star = 1.0 + 0.3 * cos(angle * 6.0 + h * 6.283);
+      brightness += flash * smoothstep(0.15 * star, 0.0, d);
+    }
+  return brightness;
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 pixel = vUv * uRes;
+  float aspect = uRes.x / uRes.y;
+
+  // ── Edge distance (150px band) ──
+  float dpr = uRes.y / 1080.0; // approximate DPR normalization
+  float bandPx = 150.0 * dpr;
+  float dT = pixel.y;
+  float dB = uRes.y - pixel.y;
+  float dL = pixel.x;
+  float dR = uRes.x - pixel.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Audio pushes crystals back (heat melts ice)
+  float retreat = uAudio * 0.6;
+  float effectiveBand = bandPx * (1.0 - retreat);
+
+  // Base mask: 1 at edge, 0 at center
+  float edgeMask = 1.0 - smoothstep(0.0, effectiveBand, dEdge);
+
+  // Frost grows slowly from edges inward when silent
+  // Use time-varying noise to make growth organic
+  float t = uTime;
+
+  // ── Crystal pattern coordinates ──
+  vec2 crystalUv = uv * vec2(aspect, 1.0);
+
+  // Main frost texture: FBM + branching dendrites
+  float frost1 = fbm(crystalUv * 8.0 + t * 0.03);
+  float frost2 = frostBranch(crystalUv * 5.0, t);
+
+  // Voronoi crystal cells — like frozen window panes
+  float cells = voronoi(crystalUv * 12.0 + frost1 * 0.5);
+  float veins = voronoiEdge(crystalUv * 12.0 + frost1 * 0.5);
+
+  // Combine patterns
+  float crystalPattern = 0.0;
+  // Dendritic branches
+  crystalPattern += frost2 * 0.5;
+  // Crystal vein network (bright lines between cells)
+  float veinLine = smoothstep(0.05, 0.0, veins);
+  crystalPattern += veinLine * 0.6;
+  // Cell interior frost texture
+  crystalPattern += (1.0 - cells) * 0.3 * (0.5 + frost1 * 0.5);
+  // Fine frost noise overlay
+  float fineNoise = fbm(crystalUv * 25.0 + t * 0.02);
+  crystalPattern += fineNoise * 0.15;
+
+  crystalPattern = clamp(crystalPattern, 0.0, 1.0);
+
+  // ── Edge feathering with organic boundary ──
+  // Add noise to the edge boundary for organic crystal-edge shapes
+  float edgeNoise = fbm(crystalUv * 6.0 + vec2(t * 0.04, t * 0.02));
+  float organicEdge = edgeMask + edgeNoise * 0.15 * edgeMask;
+  organicEdge = clamp(organicEdge, 0.0, 1.0);
+
+  // Final frost intensity
+  float frost = crystalPattern * organicEdge;
+
+  // ── Color palette: ice blue → white → diamond ──
+  vec3 iceBlue = vec3(0.55, 0.82, 0.98);
+  vec3 paleBlue = vec3(0.75, 0.90, 1.0);
+  vec3 white = vec3(0.95, 0.97, 1.0);
+  vec3 diamond = vec3(1.0, 1.0, 1.0);
+
+  // Base: gradient from ice blue (deep) to white (bright/thin)
+  vec3 col = mix(iceBlue, paleBlue, frost);
+  col = mix(col, white, smoothstep(0.4, 0.8, frost));
+
+  // ── Processing sparkle ──
+  float sparkleVal = sparkle(crystalUv * 18.0, t * 3.0);
+  sparkleVal += sparkle(crystalUv * 30.0 + 7.3, t * 4.5) * 0.5;
+  float sparkleIntensity = sparkleVal * uProcessing * organicEdge;
+  // Also add subtle idle sparkle
+  sparkleIntensity += sparkleVal * 0.08 * organicEdge;
+  col += diamond * sparkleIntensity;
+
+  // ── Rim glow at very edge ──
+  float rimGlow = pow(edgeMask, 3.0) * 0.25;
+  col += vec3(0.6, 0.85, 1.0) * rimGlow;
+
+  // ── Alpha: frost opacity ──
+  float alpha = frost * 0.85 + rimGlow * 0.5;
+  alpha *= uFade;
+  alpha = clamp(alpha, 0.0, 1.0);
+
+  // Ensure center transparency
+  float centerClear = smoothstep(effectiveBand, effectiveBand * 0.7, dEdge);
+  alpha *= centerClear;
+
+  fragColor = vec4(col, alpha);
+}
+`;
+
+function mkShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, mkShader(VS, gl.VERTEX_SHADER));
+gl.attachShader(prog, mkShader(FS, gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+let smoothProcessing = 0;
+let rafHandle = null;
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+  // Smooth audio: fast attack, slow decay (ice melts fast, regrows slowly)
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.2 + audioLevel * 0.8
+    : smoothAudio * 0.97 + audioLevel * 0.03;
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.04);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.015);
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.06;
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (fadeProgress > 0.01) {
+    const t = performance.now() / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 2.5, 0.9));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+function ensureRafRunning() { if (rafHandle === null) render(); }
+
+window.setAudioLevel = (v) => { audioLevel = v; };
+window.setActive = (on) => { active = on; if (!on) { smoothAudio = 0; } else { ensureRafRunning(); } };
+window.setProcessing = (on) => { processing = on; if (on) ensureRafRunning(); };
+window.setError = (on) => {
+  if (on) {
+    const overlay = document.createElement('div');
+    overlay.id = 'error-flash';
+    overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;border:6px solid rgba(255,60,60,0.9);box-shadow:inset 0 0 80px rgba(255,0,0,0.4),0 0 30px rgba(255,0,0,0.2);transition:opacity 0.3s;z-index:9999;border-radius:0;';
+    document.body.appendChild(overlay);
+    setTimeout(() => {
+      overlay.style.opacity = '0';
+      setTimeout(() => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
+    }, 700);
+  }
+};
+window.setCelebration = () => {
+  ensureRafRunning();
+  // Create burst of ice sparkles at edges
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;border:3px solid rgba(140,210,255,0.0);box-shadow:inset 0 0 100px rgba(100,200,255,0.0);transition:none;';
+  document.body.appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.transition = 'border-color 0.08s ease-out, box-shadow 0.08s ease-out';
+    el.style.borderColor = 'rgba(180,230,255,0.95)';
+    el.style.boxShadow = 'inset 0 0 120px rgba(120,200,255,0.5), 0 0 60px rgba(150,220,255,0.3)';
+    setTimeout(() => {
+      el.style.transition = 'border-color 0.5s ease-in, box-shadow 0.5s ease-in';
+      el.style.borderColor = 'rgba(140,210,255,0.0)';
+      el.style.boxShadow = 'inset 0 0 100px rgba(100,200,255,0.0)';
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 550);
+    }, 100);
+  });
+};
+</script>
+</body></html>

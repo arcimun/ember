@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Sound Terrain — 3D Topographic edge shader
+// Mountains from voice, sea from silence
+// Violet/orange contour lines, data-viz aesthetic
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let errorFlash = 0, celebrationFlash = 0;
+// Audio history ring buffer for terrain memory
+const AUDIO_HISTORY_SIZE = 128;
+let audioHistory = new Float32Array(AUDIO_HISTORY_SIZE);
+let audioHistoryIdx = 0;
+let lastHistoryTime = 0;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+// ── Shaders ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudio;
+uniform float uFade;
+uniform float uProcessing;
+uniform float uError;
+uniform float uCelebration;
+uniform vec2 uRes;
+uniform float uAudioHistory[128];
+
+// ── Simplex noise ──
+vec3 mod289(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 mod289(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+vec4 permute(vec4 x){ return mod289(((x * 34.0) + 1.0) * x); }
+vec4 taylorInvSqrt(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise(vec3 v) {
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0, 0.5, 1, 2);
+  vec3 i = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + 2.0 * C.xxx;
+  vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+    i.z + vec4(0, i1.z, i2.z, 1)) +
+    i.y + vec4(0, i1.y, i2.y, 1)) +
+    i.x + vec4(0, i1.x, i2.x, 1));
+  float n_ = 1.0/7.0;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0) * 2.0 + 1.0;
+  vec4 s1 = floor(b1) * 2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0));
+  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m * m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+
+// FBM — fractal brownian motion for terrain
+float fbm(vec3 p) {
+  float v = 0.0;
+  float a = 0.5;
+  vec3 shift = vec3(100.0);
+  for (int i = 0; i < 5; i++) {
+    v += a * snoise(p);
+    p = p * 2.0 + shift;
+    a *= 0.5;
+  }
+  return v;
+}
+
+// Sample audio history for terrain height at a position along edge
+float getTerrainHeight(float edgePos, float edgeId) {
+  // Map edge position to audio history index
+  float idx = edgePos * 127.0;
+  int i0 = int(floor(idx));
+  int i1 = min(i0 + 1, 127);
+  float frac = idx - float(i0);
+  // Smooth interpolation of audio history
+  float h = mix(uAudioHistory[i0], uAudioHistory[i1], frac);
+  // Add some variation per edge
+  h += snoise(vec3(edgePos * 3.0, edgeId * 7.0, uTime * 0.2)) * 0.15 * uAudio;
+  return h;
+}
+
+void main() {
+  vec2 uv = vUv;
+  vec2 pixelSize = 1.0 / uRes;
+
+  // ── Edge distances ──
+  float dT = uv.y;
+  float dB = 1.0 - uv.y;
+  float dL = uv.x;
+  float dR = 1.0 - uv.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Edge band: 150px from border
+  float bandPx = 150.0;
+  float bandNorm = bandPx / min(uRes.x, uRes.y);
+  // Celebration expands the terrain outward
+  float celebExpand = uCelebration * 0.08;
+  float totalBand = bandNorm + celebExpand;
+
+  // Outside the band → fully transparent
+  if (dEdge > totalBand) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  // Normalized depth into the band (1 at edge, 0 at inner boundary)
+  float bandDepth = 1.0 - (dEdge / totalBand);
+  bandDepth = smoothstep(0.0, 1.0, bandDepth);
+
+  // ── Determine which edge we're closest to and parametric position along it ──
+  float edgePos; // 0-1 along the edge
+  float edgeId;  // unique per edge for variation
+  if (dT <= dB && dT <= dL && dT <= dR) {
+    edgePos = uv.x; edgeId = 0.0; // top
+  } else if (dB <= dT && dB <= dL && dB <= dR) {
+    edgePos = 1.0 - uv.x; edgeId = 1.0; // bottom
+  } else if (dL <= dT && dL <= dB && dL <= dR) {
+    edgePos = uv.y; edgeId = 2.0; // left
+  } else {
+    edgePos = 1.0 - uv.y; edgeId = 3.0; // right
+  }
+
+  // ── Terrain heightmap ──
+  float terrainBase = getTerrainHeight(edgePos, edgeId);
+
+  // Multi-octave terrain noise for natural look
+  vec3 terrainCoord = vec3(
+    edgePos * 6.0 + edgeId * 10.0,
+    bandDepth * 4.0,
+    uTime * 0.15
+  );
+  float terrainNoise = fbm(terrainCoord);
+
+  // Audio drives terrain height — voice = mountains, silence = flat sea
+  float audioInfluence = uAudio * 1.8 + terrainBase * 0.6;
+  float height = terrainNoise * (0.15 + audioInfluence * 0.85);
+
+  // Processing mode: terrain undulates rhythmically
+  float procPulse = sin(uTime * 3.0 + edgePos * 12.0) * 0.5 + 0.5;
+  height += uProcessing * procPulse * 0.3;
+
+  // Celebration: eruption burst
+  height += uCelebration * 1.2 * (0.5 + terrainNoise * 0.5);
+
+  height = clamp(height, -0.5, 1.5);
+
+  // ── Contour lines ──
+  // Generate topographic contour lines from height
+  float contourSpacing = 0.08; // spacing between contour levels
+  float contourThickness = 0.012 + uAudio * 0.008;
+
+  // Multiple contour levels
+  float heightScaled = height * 8.0; // scale for more contour lines
+  float contourFrac = fract(heightScaled / contourSpacing * 0.5);
+  float contourLine = smoothstep(contourThickness, 0.0, abs(contourFrac - 0.5) - 0.0);
+  contourLine = max(contourLine, smoothstep(contourThickness * 0.7, 0.0, abs(fract(heightScaled / contourSpacing) - 0.5)));
+
+  // Secondary finer contours
+  float fineContour = fract(heightScaled / (contourSpacing * 0.3));
+  float fineLine = smoothstep(contourThickness * 0.4, 0.0, abs(fineContour - 0.5) - 0.15);
+
+  // ── Color palette ──
+  // Deep dark base → violet → orange at peaks
+  float heightNorm = clamp((height + 0.2) / 1.2, 0.0, 1.0);
+
+  // Base dark gradient (deep sea)
+  vec3 deepSea = vec3(0.02, 0.01, 0.06);
+  vec3 midDepth = vec3(0.06, 0.02, 0.15);
+  vec3 lowLand = vec3(0.15, 0.05, 0.30);
+  vec3 highland = vec3(0.35, 0.10, 0.50);
+  vec3 peak = vec3(0.55, 0.25, 0.60);
+  vec3 summit = vec3(0.85, 0.45, 0.20); // orange peaks
+
+  vec3 terrainColor;
+  if (heightNorm < 0.15) {
+    terrainColor = mix(deepSea, midDepth, heightNorm / 0.15);
+  } else if (heightNorm < 0.3) {
+    terrainColor = mix(midDepth, lowLand, (heightNorm - 0.15) / 0.15);
+  } else if (heightNorm < 0.5) {
+    terrainColor = mix(lowLand, highland, (heightNorm - 0.3) / 0.2);
+  } else if (heightNorm < 0.75) {
+    terrainColor = mix(highland, peak, (heightNorm - 0.5) / 0.25);
+  } else {
+    terrainColor = mix(peak, summit, (heightNorm - 0.75) / 0.25);
+  }
+
+  // Contour line colors: violet for low, orange for high
+  vec3 contourViolet = vec3(0.60, 0.30, 0.85);
+  vec3 contourOrange = vec3(0.95, 0.55, 0.15);
+  vec3 contourColor = mix(contourViolet, contourOrange, heightNorm);
+
+  // Fine contour: dimmer
+  vec3 fineColor = contourColor * 0.4;
+
+  // Combine terrain fill + contour lines
+  vec3 color = terrainColor;
+  color = mix(color, fineColor, fineLine * 0.5);
+  color = mix(color, contourColor, contourLine * 0.9);
+
+  // ── Processing glow ──
+  if (uProcessing > 0.01) {
+    float glowPulse = sin(uTime * 2.5) * 0.5 + 0.5;
+    vec3 glowColor = mix(vec3(0.5, 0.2, 0.8), vec3(0.9, 0.5, 0.2), glowPulse);
+    color += glowColor * uProcessing * 0.25 * bandDepth;
+  }
+
+  // ── Error flash (red) ──
+  if (uError > 0.01) {
+    vec3 errorColor = vec3(1.0, 0.15, 0.1);
+    color = mix(color, errorColor, uError * 0.7);
+  }
+
+  // ── Celebration sparkle ──
+  if (uCelebration > 0.01) {
+    // Sparkle particles
+    float sparkle = snoise(vec3(uv * 40.0, uTime * 8.0));
+    sparkle = smoothstep(0.7, 1.0, sparkle) * uCelebration;
+    vec3 sparkleColor = mix(vec3(1.0, 0.8, 0.4), vec3(0.8, 0.5, 1.0), snoise(vec3(uv * 20.0, uTime * 3.0)) * 0.5 + 0.5);
+    color += sparkleColor * sparkle * 1.5;
+
+    // Bright terrain burst
+    color += vec3(0.4, 0.25, 0.15) * uCelebration * bandDepth;
+  }
+
+  // ── Subtle grid lines for topo-map feel ──
+  float gridX = smoothstep(0.002, 0.0, abs(fract(uv.x * 30.0) - 0.5) - 0.48);
+  float gridY = smoothstep(0.002, 0.0, abs(fract(uv.y * 30.0) - 0.5) - 0.48);
+  float grid = max(gridX, gridY) * 0.08 * bandDepth;
+  color += vec3(0.3, 0.15, 0.5) * grid;
+
+  // ── Breathing animation ──
+  float breath = 0.88 + 0.12 * sin(uTime * 0.35);
+
+  // ── Final alpha: fade at inner edge, solid at screen edge ──
+  float alpha = bandDepth * breath * uFade;
+  // Extra smooth falloff at inner boundary
+  alpha *= smoothstep(0.0, 0.3, bandDepth);
+  // Terrain features increase opacity
+  alpha *= (0.5 + contourLine * 0.3 + heightNorm * 0.3);
+  alpha = clamp(alpha, 0.0, 0.85);
+
+  // Error and celebration override alpha for visibility
+  alpha = max(alpha, uError * 0.6 * bandDepth);
+  alpha = max(alpha, uCelebration * 0.5 * bandDepth);
+
+  fragColor = vec4(color * alpha, alpha);
+}`;
+
+// ── Setup WebGL ──
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+// Full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uError = gl.getUniformLocation(prog, 'uError');
+const uCelebration = gl.getUniformLocation(prog, 'uCelebration');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+const uAudioHist = gl.getUniformLocation(prog, 'uAudioHistory');
+
+let smoothError = 0, smoothCelebration = 0;
+let rafHandle = null;
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  const now = performance.now();
+
+  // Smooth audio — fast attack, slow release
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.3 + audioLevel * 0.7
+    : smoothAudio * 0.94 + audioLevel * 0.06;
+
+  // Record audio history every ~33ms for terrain memory
+  if (now - lastHistoryTime > 33) {
+    audioHistory[audioHistoryIdx] = smoothAudio;
+    audioHistoryIdx = (audioHistoryIdx + 1) % AUDIO_HISTORY_SIZE;
+    lastHistoryTime = now;
+  }
+
+  // Fade: fast in, smooth out
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.05);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.018);
+
+  // Processing transition
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.06;
+
+  // Error decay
+  smoothError *= 0.95;
+
+  // Celebration decay
+  smoothCelebration *= 0.93;
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (fadeProgress > 0.01 || smoothError > 0.01 || smoothCelebration > 0.01) {
+    const t = now / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 2.5, 1.0));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform1f(uError, smoothError);
+    gl.uniform1f(uCelebration, smoothCelebration);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+
+    // Reorder audio history so it reads oldest→newest
+    const orderedHistory = new Float32Array(AUDIO_HISTORY_SIZE);
+    for (let i = 0; i < AUDIO_HISTORY_SIZE; i++) {
+      orderedHistory[i] = audioHistory[(audioHistoryIdx + i) % AUDIO_HISTORY_SIZE];
+    }
+    gl.uniform1fv(uAudioHist, orderedHistory);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── API ──
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    smoothError = 1.0;
+    ensureRafRunning();
+  }
+};
+
+window.setCelebration = () => {
+  smoothCelebration = 1.0;
+  ensureRafRunning();
+};
+</script>
+</body></html>

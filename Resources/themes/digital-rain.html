@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="c"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Digital Rain v3 — Matrix edge overlay
+// Dynamic spread: quiet=edges, loud=full screen
+// 3-layer parallax depth, thin elegant characters
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, dpr;
+let audioLevel = 0, smoothAudio = 0;
+let active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let errorFlash = 0, celebrationFlash = 0;
+let rafHandle = null;
+let lastTime = 0;
+
+// Dynamic edge band: proportional to screen size, expands with audio
+// ~15% of shortest dimension: 13" laptop (900px) → 135px, 27" (1440px) → 216px, 4K (2160px) → 324px
+let EDGE_MIN;
+// Recalculated on resize
+
+// Characters
+const CHARS = 'ァアィイゥウェエォオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンヴ0123456789ABCDEFabcdef<>{}[]|/\\=+*&#@ΔΩΣΠψφ∞≡∇∂λ';
+
+// 3 depth layers: FAR (tiny, dim, slow), MID (normal), NEAR (large, bright, fast)
+const LAYERS = [
+  { fontSize: 10, speedRange: [0.6, 1.5], baseBright: 0.45, maxBright: 0.7,  glowSize: 0,  weight: '300' },
+  { fontSize: 15, speedRange: [1.2, 3.0], baseBright: 0.65, maxBright: 1.0,  glowSize: 8,  weight: '400' },
+  { fontSize: 22, speedRange: [2.0, 5.0], baseBright: 0.85, maxBright: 1.0,  glowSize: 16, weight: '400' },
+];
+
+let streams = [];
+let smoothEdgeBand = EDGE_MIN;
+
+function resize() {
+  dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Adaptive EDGE_MIN: ~17% of shortest screen dimension
+  // 13" laptop (900px) → ~153px, 27" (1440px) → ~245px, 4K (2160px) → ~367px
+  EDGE_MIN = Math.max(120, Math.min(H, W) * 0.17);
+  smoothEdgeBand = EDGE_MIN;
+  initStreams();
+}
+
+function initStreams() {
+  streams = [];
+  if (!W || !H) return;
+
+  // Create dense streams for all layers across ENTIRE screen width
+  // Edge masking will handle visibility dynamically
+  for (let li = 0; li < LAYERS.length; li++) {
+    const L = LAYERS[li];
+    const cols = Math.ceil(W / L.fontSize);
+    const density = li === 0 ? 0.7 : li === 1 ? 0.6 : 0.4;
+
+    for (let col = 0; col < cols; col++) {
+      const x = col * L.fontSize + (Math.random() - 0.5) * L.fontSize * 0.3;
+
+      // Create streams everywhere — edge masking is dynamic
+      if (Math.random() < density) {
+        streams.push(createStream(x, L, li));
+      }
+      // Extra density near edges (always visible zone)
+      const dL = x, dR = W - x;
+      const minH = Math.min(dL, dR);
+      if (minH < EDGE_MIN && Math.random() < density * 0.8) {
+        streams.push(createStream(x, L, li));
+      }
+    }
+  }
+}
+
+function createStream(x, layer, layerIdx) {
+  const len = 6 + Math.floor(Math.random() * 25);
+  const [sMin, sMax] = layer.speedRange;
+  const speed = sMin + Math.random() * (sMax - sMin);
+
+  return {
+    x,
+    y: -(Math.random() * H * 2.5),
+    speed, baseSpeed: speed,
+    length: len,
+    chars: Array.from({ length: len }, () => CHARS[Math.floor(Math.random() * CHARS.length)]),
+    trailBright: new Float32Array(len),
+    layerIdx,
+    fontSize: layer.fontSize,
+    baseBright: layer.baseBright,
+    maxBright: layer.maxBright,
+    glowSize: layer.glowSize,
+    weight: layer.weight,
+    phase: Math.random() * Math.PI * 2,
+    // Per-stream random offset for organic feel
+    brightnessVar: 0.7 + Math.random() * 0.6,
+  };
+}
+
+function resetStream(s) {
+  const L = LAYERS[s.layerIdx];
+  s.y = -s.length * s.fontSize - Math.random() * H * 0.8;
+  const [sMin, sMax] = L.speedRange;
+  s.speed = sMin + Math.random() * (sMax - sMin);
+  s.baseSpeed = s.speed;
+  s.length = 6 + Math.floor(Math.random() * 25);
+  s.chars = Array.from({ length: s.length }, () => CHARS[Math.floor(Math.random() * CHARS.length)]);
+  s.trailBright = new Float32Array(s.length);
+  s.brightnessVar = 0.7 + Math.random() * 0.6;
+}
+
+// Dynamic edge alpha — band expands with audio level
+function edgeAlpha(x, y, edgeBand) {
+  const dL = x, dR = W - x, dT = y, dB = H - y;
+  const minDist = Math.min(dL, dR, dT, dB);
+
+  if (minDist >= edgeBand) return 0;
+
+  // Core zone (always bright, within EDGE_MIN from border)
+  if (minDist < EDGE_MIN * 0.8) {
+    const t = 1.0 - (minDist / (EDGE_MIN * 0.8));
+    return 0.5 + 0.5 * t;
+  }
+
+  // Expansion zone (EDGE_MIN to edgeBand, fades out smoothly)
+  const t = 1.0 - (minDist / edgeBand);
+  return t * t * 0.6;
+}
+
+// ── Render ──
+
+function render(timestamp) {
+  rafHandle = requestAnimationFrame(render);
+
+  const dt = Math.min(0.05, (timestamp - lastTime) / 1000);
+  lastTime = timestamp;
+
+  // Smooth audio — boosted sensitivity (audio 0.1 already = "speaking")
+  const boostedAudio = Math.min(1, audioLevel * 2.5);
+  smoothAudio = boostedAudio > smoothAudio
+    ? smoothAudio * 0.15 + boostedAudio * 0.85
+    : smoothAudio * 0.92 + boostedAudio * 0.08;
+
+  // Dynamic edge band: quiet = EDGE_MIN, loud = almost full screen
+  const maxEdge = Math.min(W, H) * 0.7;
+  const targetEdge = EDGE_MIN + smoothAudio * (maxEdge - EDGE_MIN);
+  smoothEdgeBand += (targetEdge - smoothEdgeBand) * dt * 4;
+
+  // Fade
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + dt * 2.0);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - dt * 0.6);
+
+  // Processing
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * dt * 3;
+
+  // Flash decays
+  if (errorFlash > 0) errorFlash = Math.max(0, errorFlash - dt * 1.2);
+  if (celebrationFlash > 0) celebrationFlash = Math.max(0, celebrationFlash - dt * 1.8);
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (fadeProgress < 0.003) {
+    if (!active) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+    return;
+  }
+
+  // ── Dark backdrop + ambient glow (ensures contrast on light backgrounds) ──
+  const backdropAlpha = 0.35 * fadeProgress * (0.5 + smoothAudio * 0.5);
+  const glowW = smoothEdgeBand * 0.8;
+
+  if (backdropAlpha > 0.005) {
+    // Dark backdrop so text is readable on any background
+    const bL = ctx.createLinearGradient(0, 0, glowW, 0);
+    bL.addColorStop(0, `rgba(0,8,2,${backdropAlpha})`);
+    bL.addColorStop(0.7, `rgba(0,8,2,${backdropAlpha * 0.3})`);
+    bL.addColorStop(1, 'rgba(0,8,2,0)');
+    ctx.fillStyle = bL;
+    ctx.fillRect(0, 0, glowW, H);
+
+    const bR = ctx.createLinearGradient(W, 0, W - glowW, 0);
+    bR.addColorStop(0, `rgba(0,8,2,${backdropAlpha})`);
+    bR.addColorStop(0.7, `rgba(0,8,2,${backdropAlpha * 0.3})`);
+    bR.addColorStop(1, 'rgba(0,8,2,0)');
+    ctx.fillStyle = bR;
+    ctx.fillRect(W - glowW, 0, glowW, H);
+
+    const bT = ctx.createLinearGradient(0, 0, 0, glowW * 0.5);
+    bT.addColorStop(0, `rgba(0,8,2,${backdropAlpha * 0.7})`);
+    bT.addColorStop(1, 'rgba(0,8,2,0)');
+    ctx.fillStyle = bT;
+    ctx.fillRect(0, 0, W, glowW * 0.5);
+
+    const bB = ctx.createLinearGradient(0, H, 0, H - glowW * 0.5);
+    bB.addColorStop(0, `rgba(0,8,2,${backdropAlpha * 0.7})`);
+    bB.addColorStop(1, 'rgba(0,8,2,0)');
+    ctx.fillStyle = bB;
+    ctx.fillRect(0, H - glowW * 0.5, W, glowW * 0.5);
+
+    // Green ambient glow on top of dark backdrop
+    const ambAlpha = 0.06 * fadeProgress * (0.5 + smoothAudio * 0.5);
+    const aL = ctx.createLinearGradient(0, 0, glowW * 0.5, 0);
+    aL.addColorStop(0, `rgba(0,60,15,${ambAlpha})`);
+    aL.addColorStop(1, 'rgba(0,60,15,0)');
+    ctx.fillStyle = aL;
+    ctx.fillRect(0, 0, glowW * 0.5, H);
+
+    const aR = ctx.createLinearGradient(W, 0, W - glowW * 0.5, 0);
+    aR.addColorStop(0, `rgba(0,60,15,${ambAlpha})`);
+    aR.addColorStop(1, 'rgba(0,60,15,0)');
+    ctx.fillStyle = aR;
+    ctx.fillRect(W - glowW * 0.5, 0, glowW * 0.5, H);
+  }
+
+  // Speed and brightness multipliers — high base so it's visible even quiet
+  const speedMult = 0.5 + smoothAudio * 2.5;
+  const brightMult = 0.85 + smoothAudio * 1.2;
+  const procSlowdown = 1.0 - smoothProcessing * 0.65;
+
+  ctx.textBaseline = 'top';
+
+  // Render streams (sorted back-to-front inherently from init order)
+  for (let i = 0; i < streams.length; i++) {
+    const s = streams[i];
+
+    // Update position
+    s.y += s.speed * speedMult * procSlowdown * dt * 60;
+
+    // Mutate characters
+    const mutRate = 0.025 + smoothAudio * 0.06;
+    for (let j = 0; j < s.length; j++) {
+      if (Math.random() < mutRate * (1 - smoothProcessing * 0.7) * dt * 60) {
+        s.chars[j] = CHARS[Math.floor(Math.random() * CHARS.length)];
+        s.trailBright[j] = 1.0;
+      }
+      s.trailBright[j] *= (1 - dt * 5);
+    }
+
+    // Reset off-screen
+    if (s.y > H + s.length * s.fontSize) resetStream(s);
+
+    // Set font once per stream
+    ctx.font = `${s.weight} ${s.fontSize}px "Menlo", "Monaco", monospace`;
+
+    for (let j = 0; j < s.length; j++) {
+      const charY = s.y + j * s.fontSize;
+      if (charY < -s.fontSize || charY > H) continue;
+
+      // Dynamic edge mask
+      const eMask = edgeAlpha(s.x + s.fontSize * 0.5, charY + s.fontSize * 0.5, smoothEdgeBand);
+      if (eMask < 0.008) continue;
+
+      const headDist = j / s.length;
+      const isHead = j === 0;
+      const isNearHead = j <= 1;
+      const trailBoost = s.trailBright[j] * 0.4;
+
+      // Exponential tail falloff for depth
+      const posBright = isHead ? 1.0 : Math.pow(1.0 - headDist, 2.0) * 0.65 + trailBoost;
+
+      // Color: varies by layer and audio
+      let r, g, b;
+
+      if (isHead) {
+        // Head: white-hot, brighter with audio
+        const headIntensity = 0.5 + smoothAudio * 0.5;
+        r = Math.floor(160 + headIntensity * 95);
+        g = 255;
+        b = Math.floor(160 + headIntensity * 95);
+      } else if (isNearHead) {
+        // Near head: bright green with trail flash
+        r = Math.floor(20 + trailBoost * 140);
+        g = Math.floor(200 + trailBoost * 55);
+        b = Math.floor(20 + trailBoost * 100);
+      } else {
+        // Body: darker tail, color shifts with audio
+        // Quiet = dark forest green, Loud = bright neon
+        const bodyFade = Math.pow(1.0 - headDist, 1.5);
+        const audioColor = smoothAudio * 0.6;
+        r = Math.floor(trailBoost * 80);
+        g = Math.floor((40 + audioColor * 60) + bodyFade * (120 + audioColor * 80) + trailBoost * 50);
+        b = Math.floor(trailBoost * 40 + audioColor * 20);
+      }
+
+      // Processing: cyan/blue shift
+      if (smoothProcessing > 0.01) {
+        b = Math.min(255, Math.floor(b + (180 - b) * smoothProcessing * 0.5));
+        r = Math.floor(r * (1 - smoothProcessing * 0.3));
+        g = Math.floor(g * (1 - smoothProcessing * 0.15));
+      }
+
+      // Error: red
+      if (errorFlash > 0) {
+        const ef = errorFlash * errorFlash;
+        r = Math.min(255, Math.floor(r + (255 - r) * ef));
+        g = Math.floor(g * (1 - ef * 0.85));
+        b = Math.floor(b * (1 - ef * 0.9));
+      }
+
+      // Celebration: white-green burst
+      if (celebrationFlash > 0) {
+        const cf = celebrationFlash;
+        r = Math.min(255, Math.floor(r + (255 - r) * cf * 0.6));
+        g = Math.min(255, Math.floor(g + (255 - g) * cf));
+        b = Math.min(255, Math.floor(b + (255 - b) * cf * 0.5));
+      }
+
+      // Layer brightness: far = dim, near = bright. Audio boosts all.
+      const layerBright = s.baseBright + (s.maxBright - s.baseBright) * smoothAudio;
+
+      // Final alpha
+      let alpha = posBright * layerBright * brightMult * eMask * fadeProgress * s.brightnessVar;
+      alpha = Math.min(1, Math.max(0, alpha));
+      if (alpha < 0.01) continue;
+
+      // Glow for head/near-head on mid and near layers
+      if (isNearHead && s.glowSize > 0 && alpha > 0.15) {
+        const glowA = alpha * (isHead ? 0.7 : 0.3);
+        ctx.shadowColor = `rgba(${Math.min(255, r + 40)},${g},${Math.min(255, b + 30)},${glowA.toFixed(3)})`;
+        ctx.shadowBlur = s.glowSize * (0.8 + smoothAudio * 1.2);
+      }
+
+      ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+      ctx.fillText(s.chars[j], s.x, charY);
+
+      // Double-pass for near-layer heads (intense glow)
+      if (isHead && s.layerIdx === 2 && alpha > 0.25) {
+        ctx.fillText(s.chars[j], s.x, charY);
+      }
+
+      if (isNearHead && s.glowSize > 0) {
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
+      }
+    }
+  }
+
+  // ── Scanline CRT effect (every other pixel row) ──
+  if (fadeProgress > 0.1) {
+    const scanA = 0.04 * fadeProgress;
+    ctx.fillStyle = `rgba(0,0,0,${scanA})`;
+    for (let y = 0; y < H; y += 2) {
+      ctx.fillRect(0, y, W, 1);
+    }
+  }
+
+  // ── Edge border glow line ──
+  if (fadeProgress > 0.2 && smoothAudio > 0.03) {
+    const lineA = 0.12 * fadeProgress * Math.min(1, smoothAudio * 2);
+    ctx.strokeStyle = `rgba(0,255,65,${lineA.toFixed(3)})`;
+    ctx.lineWidth = 0.5;
+    ctx.shadowColor = `rgba(0,255,65,${(lineA * 0.4).toFixed(3)})`;
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(0, H);
+    ctx.moveTo(W, 0); ctx.lineTo(W, H);
+    ctx.moveTo(0, 0); ctx.lineTo(W, 0);
+    ctx.moveTo(0, H); ctx.lineTo(W, H);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+  }
+}
+
+function ensureRaf() {
+  if (rafHandle === null) { lastTime = performance.now(); render(lastTime); }
+}
+
+// ── Public API ──
+
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; audioLevel = 0; }
+  else {
+    if (streams.length === 0) initStreams();
+    ensureRaf();
+  }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRaf();
+};
+
+window.setError = (on) => {
+  if (on) { errorFlash = 1.0; ensureRaf(); }
+};
+
+window.setCelebration = () => {
+  celebrationFlash = 1.0;
+  for (let i = 0; i < streams.length; i++) {
+    streams[i].speed = streams[i].baseSpeed * 4;
+    for (let j = 0; j < streams[i].trailBright.length; j++) {
+      streams[i].trailBright[j] = 1.0;
+    }
+  }
+  ensureRaf();
+  setTimeout(() => {
+    for (let i = 0; i < streams.length; i++) {
+      streams[i].speed = streams[i].baseSpeed;
+    }
+  }, 500);
+};
+
+// ── Init ──
+resize();
+window.addEventListener('resize', resize);
+</script>
+</body></html>

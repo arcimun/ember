@@ -59,6 +59,82 @@ jobs:
             "Ember-${APP_VERSION}.dmg" \
             staging/ || true
 
+      - name: Sign DMG and update appcast.xml
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          APP_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "SPARKLE_PRIVATE_KEY not set — skipping appcast update"
+            exit 0
+          fi
+
+          DMG_FILE=$(ls Ember-*.dmg 2>/dev/null | head -1)
+          [ -z "$DMG_FILE" ] && { echo "No DMG found"; exit 0; }
+
+          # Find sign_update in Sparkle build artifacts
+          SIGN_UPDATE=$(find .build -name "sign_update" -type f 2>/dev/null | head -1)
+          if [ -z "$SIGN_UPDATE" ]; then
+            # Download from Sparkle release as fallback
+            curl -sL "https://github.com/sparkle-project/Sparkle/releases/latest/download/Sparkle-2.7.5.tar.xz" | tar xJ -C /tmp
+            SIGN_UPDATE="/tmp/bin/sign_update"
+          fi
+          chmod +x "$SIGN_UPDATE"
+
+          # Sign the DMG — outputs edSignature and length
+          SIGN_OUTPUT=$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" "$DMG_FILE" -f -)
+          ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | grep -o 'sparkle:edSignature="[^"]*"' | cut -d'"' -f2)
+          FILE_LENGTH=$(wc -c < "$DMG_FILE" | tr -d ' ')
+          PUB_DATE=$(date -u "+%a, %d %b %Y %H:%M:%S %z")
+
+          # Generate new appcast.xml with this version on top
+          cat > appcast.xml << APPCAST_EOF
+          <?xml version="1.0" standalone="yes"?>
+          <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+            <channel>
+              <title>Ember</title>
+              <link>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</link>
+              <description>Ember voice-to-text updates</description>
+              <language>en</language>
+              <item>
+                <title>Version ${APP_VERSION}</title>
+                <sparkle:version>${APP_VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${APP_VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <pubDate>${PUB_DATE}</pubDate>
+                <enclosure
+                  url="https://github.com/arcimun/ember/releases/download/v${APP_VERSION}/Ember-${APP_VERSION}.dmg"
+                  type="application/octet-stream"
+                  sparkle:edSignature="${ED_SIGNATURE}"
+                  length="${FILE_LENGTH}"
+                />
+              </item>
+            </channel>
+          </rss>
+          APPCAST_EOF
+
+          # Remove leading whitespace from heredoc
+          sed -i '' 's/^          //' appcast.xml
+
+          echo "✅ appcast.xml updated for v${APP_VERSION}"
+          cat appcast.xml
+
+      - name: Commit appcast.xml to main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! git diff --quiet appcast.xml 2>/dev/null; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git fetch origin main
+            git checkout main
+            git add appcast.xml
+            git commit -m "chore: update appcast.xml for v$(cat VERSION | tr -d '[:space:]')"
+            git push origin main
+          else
+            echo "appcast.xml unchanged — skipping commit"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

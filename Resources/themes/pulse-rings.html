@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Pulse Rings — Sonar: concentric rings from corners
+// Deep indigo → cyan → white glow, submarine sonar vibe
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let errorFlash = 0, celebrationTime = -10;
+
+// Ring spawn system — each audio peak spawns a new ring from each corner
+const MAX_RINGS = 40;
+let rings = []; // { corner: 0-3, birth: time, intensity: float }
+let lastSpawnTime = 0;
+let prevAudioPeak = 0;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+// ── Shaders ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudio;
+uniform float uFade;
+uniform float uProcessing;
+uniform float uErrorFlash;
+uniform float uCelebration;
+uniform vec2 uRes;
+
+// Ring data: vec4(cornerX, cornerY, age, intensity) — up to 40 rings
+uniform vec4 uRings[40];
+uniform int uRingCount;
+
+void main() {
+  vec2 uv = vUv;
+  vec2 pixel = uv * uRes;
+  float aspect = uRes.x / uRes.y;
+
+  // Distance from nearest edge (0 at edge, 0.5 at center)
+  float dT = uv.y;
+  float dB = 1.0 - uv.y;
+  float dL = uv.x;
+  float dR = 1.0 - uv.x;
+  float dEdge = min(min(dT, dB), min(dL, dR));
+
+  // Edge band: 150px from border, in UV space
+  float edgeBandPx = 150.0;
+  float edgeBandU = edgeBandPx / uRes.y; // use smaller dimension for consistent band
+  float edgeMask = 1.0 - smoothstep(0.0, edgeBandU, dEdge);
+
+  // Processing: rings compress toward center — expand the visible band
+  float procExpand = uProcessing * edgeBandU * 1.5;
+  float procMask = 1.0 - smoothstep(0.0, edgeBandU + procExpand, dEdge);
+  float finalMask = mix(edgeMask, procMask, uProcessing);
+
+  // Corner positions in UV space
+  vec2 corners[4];
+  corners[0] = vec2(0.0, 0.0); // top-left
+  corners[1] = vec2(1.0, 0.0); // top-right
+  corners[2] = vec2(0.0, 1.0); // bottom-left
+  corners[3] = vec2(1.0, 1.0); // bottom-right
+
+  // Accumulate ring contributions
+  float ringGlow = 0.0;
+  float ringCyan = 0.0;
+  float ringWhite = 0.0;
+
+  for (int i = 0; i < 40; i++) {
+    if (i >= uRingCount) break;
+
+    vec2 corner = uRings[i].xy;
+    float age = uRings[i].z;
+    float intensity = uRings[i].w;
+
+    if (intensity <= 0.0) continue;
+
+    // Aspect-correct distance from corner
+    vec2 delta = (uv - corner) * vec2(aspect, 1.0);
+    float dist = length(delta);
+
+    // Ring radius grows with age — processing compresses rings inward
+    float speed = mix(0.6, 0.2, uProcessing);
+    float radius = age * speed;
+
+    // Celebration: burst outward faster
+    float celebBoost = uCelebration * 2.0;
+    radius += celebBoost * age * 0.8;
+
+    // Ring thickness — thinner as they age for sonar feel
+    float thickness = mix(0.012, 0.004, clamp(age * 0.5, 0.0, 1.0));
+    thickness += uAudio * 0.006;
+
+    // Sine-based ripple: creates multiple concentric rings per spawn
+    float rippleFreq = 18.0 + uAudio * 8.0;
+    float ripple = sin((dist - radius) * rippleFreq) * 0.5 + 0.5;
+    ripple = pow(ripple, 6.0); // sharpen the rings
+
+    // Distance falloff from the ring's current position
+    float ringDist = abs(dist - radius);
+    float ringShape = exp(-ringDist * ringDist / (thickness * thickness));
+
+    // Age-based fade
+    float ageFade = exp(-age * 1.2) * intensity;
+
+    // Combine ring shape with ripple for sonar multi-ring effect
+    float contribution = (ringShape * 0.7 + ripple * ringShape * 0.5) * ageFade;
+
+    ringGlow += contribution;
+
+    // Inner rings are more cyan, outer rings fade to white
+    float colorMix = clamp(radius * 1.5, 0.0, 1.0);
+    ringCyan += contribution * (1.0 - colorMix);
+    ringWhite += contribution * colorMix;
+  }
+
+  // Ambient sonar sweep — always-present subtle rotation from corners
+  float ambientGlow = 0.0;
+  for (int c = 0; c < 4; c++) {
+    vec2 delta = (uv - corners[c]) * vec2(aspect, 1.0);
+    float dist = length(delta);
+    float angle = atan(delta.y, delta.x);
+
+    // Rotating sweep beam
+    float sweep = sin(angle * 2.0 - uTime * 0.8 + float(c) * 1.5708) * 0.5 + 0.5;
+    sweep = pow(sweep, 8.0);
+
+    // Pulsing rings at constant intervals
+    float pulse = sin(dist * 25.0 - uTime * 2.0) * 0.5 + 0.5;
+    pulse = pow(pulse, 12.0);
+
+    float cornerDist = dist;
+    float cornerFade = exp(-cornerDist * 3.0);
+
+    ambientGlow += (sweep * 0.15 + pulse * 0.08) * cornerFade * (0.3 + uAudio * 0.7);
+  }
+
+  ringGlow = clamp(ringGlow + ambientGlow, 0.0, 2.5);
+
+  // ── Color palette: deep indigo → cyan → white ──
+  vec3 deepIndigo = vec3(0.06, 0.02, 0.18);
+  vec3 indigo     = vec3(0.12, 0.06, 0.35);
+  vec3 cyan       = vec3(0.05, 0.55, 0.75);
+  vec3 brightCyan = vec3(0.15, 0.85, 0.95);
+  vec3 white      = vec3(0.85, 0.95, 1.0);
+
+  // Color based on intensity
+  float t = clamp(ringGlow, 0.0, 1.0);
+  vec3 color;
+  if (t < 0.15) {
+    color = mix(deepIndigo, indigo, t / 0.15);
+  } else if (t < 0.4) {
+    color = mix(indigo, cyan, (t - 0.15) / 0.25);
+  } else if (t < 0.7) {
+    color = mix(cyan, brightCyan, (t - 0.4) / 0.3);
+  } else {
+    color = mix(brightCyan, white, (t - 0.7) / 0.3);
+  }
+
+  // Add cyan-shifted color for ring contributions
+  color += vec3(0.02, 0.12, 0.15) * ringCyan;
+  color += vec3(0.1, 0.1, 0.12) * ringWhite * 0.5;
+
+  // Celebration: bright cyan-white burst
+  float celebGlow = uCelebration * (1.0 - dEdge * 2.0);
+  celebGlow = max(celebGlow, 0.0);
+  color += vec3(0.3, 0.8, 1.0) * celebGlow * 2.0;
+
+  // Error: red flash override
+  vec3 errorColor = vec3(1.0, 0.1, 0.05);
+  color = mix(color, errorColor, uErrorFlash * 0.8);
+
+  // Breathing subtle pulse
+  float breath = 0.9 + 0.1 * sin(uTime * 0.5);
+
+  // Final alpha: edge mask * ring glow * fade
+  float alpha = clamp(ringGlow * 1.5, 0.0, 1.0) * finalMask * uFade * breath;
+
+  // Error flash adds to alpha at edges
+  alpha = max(alpha, uErrorFlash * finalMask * 0.6);
+
+  // Celebration adds alpha
+  alpha = max(alpha, celebGlow * finalMask);
+
+  fragColor = vec4(color * alpha, alpha);
+}`;
+
+// ── Setup WebGL ──
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+// Full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uError = gl.getUniformLocation(prog, 'uErrorFlash');
+const uCeleb = gl.getUniformLocation(prog, 'uCelebration');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+const uRingCount = gl.getUniformLocation(prog, 'uRingCount');
+const uRingLocs = [];
+for (let i = 0; i < MAX_RINGS; i++) {
+  uRingLocs.push(gl.getUniformLocation(prog, `uRings[${i}]`));
+}
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+// Corner positions in UV space
+const corners = [[0, 0], [1, 0], [0, 1], [1, 1]];
+
+let rafHandle = null;
+
+function spawnRings(intensity) {
+  const now = performance.now() / 1000;
+  // Spawn one ring from each corner
+  for (let c = 0; c < 4; c++) {
+    rings.push({
+      cx: corners[c][0],
+      cy: corners[c][1],
+      birth: now,
+      intensity: intensity
+    });
+  }
+  // Trim old rings
+  while (rings.length > MAX_RINGS) rings.shift();
+}
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+  const now = performance.now() / 1000;
+
+  // Smooth audio — fast attack, slow release
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.3 + audioLevel * 0.7
+    : smoothAudio * 0.93 + audioLevel * 0.07;
+
+  // Detect audio peaks and spawn rings
+  if (active && smoothAudio > 0.05) {
+    const timeSinceSpawn = now - lastSpawnTime;
+    const spawnInterval = Math.max(0.08, 0.3 - smoothAudio * 0.25); // faster spawns at higher volume
+    if (timeSinceSpawn > spawnInterval && smoothAudio > prevAudioPeak * 0.6) {
+      spawnRings(Math.min(smoothAudio * 2.5, 1.0));
+      lastSpawnTime = now;
+    }
+  }
+  prevAudioPeak = smoothAudio;
+
+  // Fade: fast in, smooth out
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.06);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.02);
+
+  // Processing mode transition
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.05;
+
+  // Error flash decay
+  if (errorFlash > 0) errorFlash = Math.max(0, errorFlash - 0.025);
+
+  // Celebration decay
+  let celebValue = 0;
+  const celebAge = now - celebrationTime;
+  if (celebAge < 0.6) {
+    celebValue = 1.0 - (celebAge / 0.6);
+    celebValue = celebValue * celebValue; // ease out
+  }
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (fadeProgress > 0.01 || errorFlash > 0.01 || celebValue > 0.01) {
+    gl.uniform1f(uTime, now);
+    gl.uniform1f(uAudio, smoothAudio);
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform1f(uError, errorFlash);
+    gl.uniform1f(uCeleb, celebValue);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+
+    // Upload ring data
+    let activeRings = 0;
+    for (let i = 0; i < rings.length && activeRings < MAX_RINGS; i++) {
+      const r = rings[i];
+      const age = now - r.birth;
+      if (age > 4.0) continue; // rings older than 4s are dead
+      gl.uniform4f(uRingLocs[activeRings], r.cx, r.cy, age, r.intensity);
+      activeRings++;
+    }
+    gl.uniform1i(uRingCount, activeRings);
+
+    // Clean dead rings periodically
+    if (rings.length > MAX_RINGS * 0.8) {
+      rings = rings.filter(r => (now - r.birth) < 4.0);
+    }
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    // Nothing to render — stop RAF loop to save battery
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── API ──
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; audioLevel = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    errorFlash = 1.0;
+    ensureRafRunning();
+  }
+};
+
+window.setCelebration = () => {
+  celebrationTime = performance.now() / 1000;
+  // Burst: spawn dense rings from all corners
+  spawnRings(1.0);
+  spawnRings(0.8);
+  spawnRings(0.6);
+  ensureRafRunning();
+};
+</script>
+</body></html>

@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="c"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Waveform Bar — Audio Visualizer (EQ style)
+// Gradient bars along all 4 edges, transparent center
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, dpr;
+function resize() {
+  dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.onresize = resize;
+
+// ── State ──
+let audioLevel = 0;
+let smoothAudio = 0;
+let active = false;
+let fadeProgress = 0;
+let processing = false;
+let smoothProcessing = 0;
+let errorFlash = 0;
+let celebrationTime = -1;
+let rafHandle = null;
+
+// ── Bar config ──
+const NUM_BARS = 48;
+const EDGE_DEPTH = 130; // max bar height in px
+const BAR_GAP_RATIO = 0.35; // gap as fraction of bar width
+const ROUND_CAP = 3;
+
+// ── Per-bar state (smooth heights) ──
+// 4 edges: top, bottom, left, right
+const barHeights = {
+  top: new Float32Array(NUM_BARS),
+  bottom: new Float32Array(NUM_BARS),
+  left: new Float32Array(NUM_BARS),
+  right: new Float32Array(NUM_BARS)
+};
+const barTargets = {
+  top: new Float32Array(NUM_BARS),
+  bottom: new Float32Array(NUM_BARS),
+  left: new Float32Array(NUM_BARS),
+  right: new Float32Array(NUM_BARS)
+};
+// Frozen heights for processing mode
+const barFrozen = {
+  top: new Float32Array(NUM_BARS),
+  bottom: new Float32Array(NUM_BARS),
+  left: new Float32Array(NUM_BARS),
+  right: new Float32Array(NUM_BARS)
+};
+
+// ── Color palette: violet -> cyan -> green -> yellow -> orange ──
+const palette = [
+  [138, 43, 226],   // violet
+  [100, 60, 255],   // blue-violet
+  [0, 180, 255],    // cyan
+  [0, 220, 180],    // teal
+  [40, 220, 80],    // green
+  [180, 220, 40],   // yellow-green
+  [255, 220, 0],    // yellow
+  [255, 160, 0],    // orange
+  [255, 100, 40],   // red-orange
+];
+
+function getBarColor(index, total, alpha) {
+  const t = index / (total - 1);
+  const scaledT = t * (palette.length - 1);
+  const i = Math.floor(scaledT);
+  const f = scaledT - i;
+  const c0 = palette[Math.min(i, palette.length - 1)];
+  const c1 = palette[Math.min(i + 1, palette.length - 1)];
+  const r = c0[0] + (c1[0] - c0[0]) * f;
+  const g = c0[1] + (c1[1] - c0[1]) * f;
+  const b = c0[2] + (c1[2] - c0[2]) * f;
+  return `rgba(${r|0},${g|0},${b|0},${alpha})`;
+}
+
+function getBarColorRGB(index, total) {
+  const t = index / (total - 1);
+  const scaledT = t * (palette.length - 1);
+  const i = Math.floor(scaledT);
+  const f = scaledT - i;
+  const c0 = palette[Math.min(i, palette.length - 1)];
+  const c1 = palette[Math.min(i + 1, palette.length - 1)];
+  return [
+    c0[0] + (c1[0] - c0[0]) * f,
+    c0[1] + (c1[1] - c0[1]) * f,
+    c0[2] + (c1[2] - c0[2]) * f
+  ];
+}
+
+// ── Fake FFT from single RMS value ──
+// Bass (left) louder, highs (right) quieter, with noise
+const freqSeeds = new Float32Array(NUM_BARS);
+const freqPhases = new Float32Array(NUM_BARS);
+for (let i = 0; i < NUM_BARS; i++) {
+  freqSeeds[i] = Math.random() * 6.28;
+  freqPhases[i] = Math.random() * 6.28;
+}
+
+function generateFFT(rms, time) {
+  const bands = new Float32Array(NUM_BARS);
+  for (let i = 0; i < NUM_BARS; i++) {
+    const freq = i / NUM_BARS; // 0=bass, 1=highs
+    // Bass rolloff: bass gets more energy
+    const bassBoost = 1.0 - freq * 0.6;
+    // Per-band wobble
+    const wobble = Math.sin(time * (2.0 + freq * 4.0) + freqSeeds[i]) * 0.3 + 0.7;
+    // Secondary oscillation for liveliness
+    const wobble2 = Math.sin(time * (1.5 + freq * 3.0) + freqPhases[i]) * 0.2 + 0.8;
+    // Random jitter
+    const jitter = 0.85 + Math.random() * 0.3;
+
+    bands[i] = rms * bassBoost * wobble * wobble2 * jitter;
+    bands[i] = Math.max(0, Math.min(1, bands[i]));
+  }
+  return bands;
+}
+
+// ── Spring-like bar animation ──
+function updateBars(edge, targets, dt) {
+  const heights = barHeights[edge];
+  for (let i = 0; i < NUM_BARS; i++) {
+    const target = targets[i];
+    const diff = target - heights[i];
+    // Fast attack, smooth decay
+    if (diff > 0) {
+      heights[i] += diff * Math.min(1, 12 * dt); // fast rise
+    } else {
+      heights[i] += diff * Math.min(1, 4 * dt); // smooth fall
+    }
+  }
+}
+
+// ── Drawing ──
+function drawBarsHorizontal(y, direction, edge, alpha) {
+  // direction: 1 = bars grow downward (top edge), -1 = bars grow upward (bottom edge)
+  const totalWidth = W;
+  const barSlot = totalWidth / NUM_BARS;
+  const gap = barSlot * BAR_GAP_RATIO;
+  const barW = barSlot - gap;
+  const heights = barHeights[edge];
+  const time = performance.now() / 1000;
+
+  for (let i = 0; i < NUM_BARS; i++) {
+    const h = heights[i] * EDGE_DEPTH * fadeProgress;
+    if (h < 1) continue;
+
+    const x = i * barSlot + gap / 2;
+    const [r, g, b] = getBarColorRGB(i, NUM_BARS);
+
+    // Error: override to red
+    let cr = r, cg = g, cb = b;
+    if (errorFlash > 0) {
+      cr = cr + (255 - cr) * errorFlash;
+      cg = cg * (1 - errorFlash * 0.8);
+      cb = cb * (1 - errorFlash * 0.8);
+    }
+
+    // Celebration: rainbow shift
+    if (celebrationTime >= 0) {
+      const ct = celebrationTime;
+      if (ct < 0.6) {
+        const hue = ((i / NUM_BARS) * 360 + ct * 600) % 360;
+        const [rr, gg, bb] = hslToRgb(hue, 100, 60);
+        const blend = Math.sin(ct / 0.6 * Math.PI);
+        cr = cr + (rr - cr) * blend;
+        cg = cg + (gg - cg) * blend;
+        cb = cb + (bb - cb) * blend;
+      }
+    }
+
+    // Processing pulse
+    let pulseAlpha = alpha;
+    if (smoothProcessing > 0.01) {
+      const pulse = 0.6 + 0.4 * Math.sin(time * 1.5);
+      pulseAlpha = alpha * (1 - smoothProcessing) + alpha * pulse * smoothProcessing;
+    }
+
+    // Glow (larger, faded version behind)
+    const glowAlpha = pulseAlpha * 0.25;
+    ctx.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${glowAlpha})`;
+    const glowExtra = 4;
+    if (direction === 1) {
+      roundRect(ctx, x - glowExtra, y - glowExtra, barW + glowExtra * 2, h + glowExtra * 2, ROUND_CAP + 2);
+    } else {
+      roundRect(ctx, x - glowExtra, y - h - glowExtra, barW + glowExtra * 2, h + glowExtra * 2, ROUND_CAP + 2);
+    }
+    ctx.fill();
+
+    // Main bar
+    ctx.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${pulseAlpha})`;
+    if (direction === 1) {
+      roundRect(ctx, x, y, barW, h, ROUND_CAP);
+    } else {
+      roundRect(ctx, x, y - h, barW, h, ROUND_CAP);
+    }
+    ctx.fill();
+
+    // Bright highlight on top cap
+    const highlightAlpha = pulseAlpha * 0.5;
+    ctx.fillStyle = `rgba(255,255,255,${highlightAlpha})`;
+    if (direction === 1) {
+      roundRect(ctx, x + 1, y, barW - 2, Math.min(h, 3), ROUND_CAP);
+    } else {
+      roundRect(ctx, x + 1, y - Math.min(h, 3), barW - 2, Math.min(h, 3), ROUND_CAP);
+    }
+    ctx.fill();
+  }
+}
+
+function drawBarsVertical(x, direction, edge, alpha) {
+  // direction: 1 = bars grow rightward (left edge), -1 = bars grow leftward (right edge)
+  const totalHeight = H;
+  const barSlot = totalHeight / NUM_BARS;
+  const gap = barSlot * BAR_GAP_RATIO;
+  const barH = barSlot - gap;
+  const heights = barHeights[edge];
+  const time = performance.now() / 1000;
+
+  for (let i = 0; i < NUM_BARS; i++) {
+    const w = heights[i] * EDGE_DEPTH * fadeProgress;
+    if (w < 1) continue;
+
+    const y = i * barSlot + gap / 2;
+    const [r, g, b] = getBarColorRGB(i, NUM_BARS);
+
+    let cr = r, cg = g, cb = b;
+    if (errorFlash > 0) {
+      cr = cr + (255 - cr) * errorFlash;
+      cg = cg * (1 - errorFlash * 0.8);
+      cb = cb * (1 - errorFlash * 0.8);
+    }
+
+    if (celebrationTime >= 0) {
+      const ct = celebrationTime;
+      if (ct < 0.6) {
+        const hue = ((i / NUM_BARS) * 360 + ct * 600) % 360;
+        const [rr, gg, bb] = hslToRgb(hue, 100, 60);
+        const blend = Math.sin(ct / 0.6 * Math.PI);
+        cr = cr + (rr - cr) * blend;
+        cg = cg + (gg - cg) * blend;
+        cb = cb + (bb - cb) * blend;
+      }
+    }
+
+    let pulseAlpha = alpha;
+    if (smoothProcessing > 0.01) {
+      const pulse = 0.6 + 0.4 * Math.sin(time * 1.5);
+      pulseAlpha = alpha * (1 - smoothProcessing) + alpha * pulse * smoothProcessing;
+    }
+
+    // Glow
+    const glowAlpha = pulseAlpha * 0.25;
+    ctx.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${glowAlpha})`;
+    const glowExtra = 4;
+    if (direction === 1) {
+      roundRect(ctx, x - glowExtra, y - glowExtra, w + glowExtra * 2, barH + glowExtra * 2, ROUND_CAP + 2);
+    } else {
+      roundRect(ctx, x - w - glowExtra, y - glowExtra, w + glowExtra * 2, barH + glowExtra * 2, ROUND_CAP + 2);
+    }
+    ctx.fill();
+
+    // Main bar
+    ctx.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${pulseAlpha})`;
+    if (direction === 1) {
+      roundRect(ctx, x, y, w, barH, ROUND_CAP);
+    } else {
+      roundRect(ctx, x - w, y, w, barH, ROUND_CAP);
+    }
+    ctx.fill();
+
+    // Highlight
+    const highlightAlpha = pulseAlpha * 0.5;
+    ctx.fillStyle = `rgba(255,255,255,${highlightAlpha})`;
+    if (direction === 1) {
+      roundRect(ctx, x, y + 1, Math.min(w, 3), barH - 2, ROUND_CAP);
+    } else {
+      roundRect(ctx, x - Math.min(w, 3), y + 1, Math.min(w, 3), barH - 2, ROUND_CAP);
+    }
+    ctx.fill();
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (w < 0 || h < 0) return;
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function hslToRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r, g, b;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+// ── Main render loop ──
+let lastTime = performance.now();
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05); // cap at 50ms
+  lastTime = now;
+  const time = now / 1000;
+
+  // Smooth audio level
+  if (audioLevel > smoothAudio) {
+    smoothAudio = smoothAudio * 0.25 + audioLevel * 0.75; // fast attack
+  } else {
+    smoothAudio = smoothAudio * 0.92 + audioLevel * 0.08; // smooth decay
+  }
+
+  // Fade in/out
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 3.0 * dt); // ~0.33s in
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.8 * dt); // ~1.25s out
+
+  // Processing transition
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 3.0 * dt;
+
+  // Error flash decay
+  if (errorFlash > 0) errorFlash = Math.max(0, errorFlash - dt * 1.2);
+
+  // Celebration timer
+  if (celebrationTime >= 0) {
+    celebrationTime += dt;
+    if (celebrationTime > 0.8) celebrationTime = -1;
+  }
+
+  // Generate FFT targets
+  const effectiveAudio = processing ? 0 : smoothAudio;
+  const fft = generateFFT(effectiveAudio * 1.8, time);
+
+  // When processing, freeze bars at their current (or stored) heights
+  if (processing && smoothProcessing > 0.5) {
+    // Targets stay at frozen values
+    for (const edge of ['top', 'bottom', 'left', 'right']) {
+      for (let i = 0; i < NUM_BARS; i++) {
+        barTargets[edge][i] = barFrozen[edge][i];
+      }
+    }
+  } else {
+    // Celebration: all bars max
+    const celActive = celebrationTime >= 0 && celebrationTime < 0.6;
+
+    for (let i = 0; i < NUM_BARS; i++) {
+      const val = celActive ? 1.0 : fft[i];
+      barTargets.top[i] = val;
+      barTargets.bottom[i] = val;
+      // Vertical edges: reversed mapping for visual interest
+      barTargets.left[i] = celActive ? 1.0 : fft[NUM_BARS - 1 - i];
+      barTargets.right[i] = val;
+    }
+
+    // Store frozen state while not processing
+    if (!processing) {
+      for (const edge of ['top', 'bottom', 'left', 'right']) {
+        for (let i = 0; i < NUM_BARS; i++) {
+          barFrozen[edge][i] = barHeights[edge][i];
+        }
+      }
+    }
+  }
+
+  // Animate bars
+  for (const edge of ['top', 'bottom', 'left', 'right']) {
+    updateBars(edge, barTargets[edge], dt);
+  }
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  if (fadeProgress < 0.005) {
+    if (!active) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
+    return;
+  }
+
+  // Base alpha with fade
+  const alpha = 0.85 * fadeProgress;
+
+  // Draw all 4 edges
+  drawBarsHorizontal(0, 1, 'top', alpha);         // top: bars grow down
+  drawBarsHorizontal(H, -1, 'bottom', alpha);     // bottom: bars grow up
+  drawBarsVertical(0, 1, 'left', alpha);           // left: bars grow right
+  drawBarsVertical(W, -1, 'right', alpha);         // right: bars grow left
+}
+
+function ensureRafRunning() {
+  if (rafHandle === null) { lastTime = performance.now(); render(); }
+}
+
+// Start initial loop (will auto-stop when inactive)
+render();
+
+// ── Public API ──
+window.setAudioLevel = (v) => { audioLevel = Math.max(0, Math.min(1, v)); };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; audioLevel = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  if (on && !processing) {
+    // Freeze current bar heights
+    for (const edge of ['top', 'bottom', 'left', 'right']) {
+      for (let i = 0; i < NUM_BARS; i++) {
+        barFrozen[edge][i] = Math.max(barHeights[edge][i], 0.15); // minimum visible height
+      }
+    }
+  }
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    errorFlash = 1.0;
+    ensureRafRunning();
+  }
+};
+
+window.setCelebration = () => {
+  celebrationTime = 0;
+  ensureRafRunning();
+};
+</script>
+</body></html>

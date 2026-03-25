@@ -12,7 +12,7 @@
 
 - **Under 1 second** — Groq Whisper transcription, faster than you can reach for the keyboard
 - **Works everywhere** — auto-pastes into whatever app you're using. Slack, VS Code, Notes, anything
-- **Beautiful overlay** — voice-reactive plasma animation on your screen edges. 5 themes
+- **Beautiful overlay** — voice-reactive animation on your screen edges. 15 themes (Matrix, Chrome, Aurora, and more)
 - **Set your own hotkey** — backtick by default, change to any key combo in Preferences
 - **Smart auto-stop** — detects when you stop speaking and transcribes automatically
 - **Free forever** — open-source, MIT license, free Groq API

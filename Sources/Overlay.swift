@@ -73,8 +73,8 @@ class PlasmaOverlayWindow: NSWindow, WKNavigationDelegate {
         let themesURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/themes")
         var themeURL = themesURL.appendingPathComponent("\(name).html")
         if !FileManager.default.fileExists(atPath: themeURL.path) {
-            log("⚠️ Theme '\(name)' not found, falling back to violet-flame")
-            themeURL = themesURL.appendingPathComponent("violet-flame.html")
+            log("⚠️ Theme '\(name)' not found, falling back to digital-rain")
+            themeURL = themesURL.appendingPathComponent("digital-rain.html")
         }
         guard FileManager.default.fileExists(atPath: themeURL.path) else {
             log("❌ No theme files found"); return

@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="gl"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Liquid Chrome — Metallic mercury edge shader
+// Silver → chrome → gold, noise-driven chrome surface
+// Transparent center, ~150px edge band
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, antialias: true });
+if (!gl) { document.body.innerText = 'WebGL2 required'; }
+
+let W, H, audioLevel = 0, smoothAudio = 0, active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+resize();
+window.onresize = resize;
+
+// ── Shaders ──
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 vUv;
+void main() { vUv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0, 1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudio;
+uniform float uFade;
+uniform float uProcessing;
+uniform float uError;
+uniform float uCelebration;
+uniform vec2 uRes;
+uniform float uDpr;
+
+// ── Noise functions ──
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise(vec3 v) {
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + 2.0 * C.xxx;
+  vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+    + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+    + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 1.0/7.0;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x2_ = x_ * ns.x + ns.yyyy;
+  vec4 y2_ = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x2_) - abs(y2_);
+  vec4 b0 = vec4(x2_.xy, y2_.xy);
+  vec4 b1 = vec4(x2_.zw, y2_.zw);
+  vec4 s0 = floor(b0) * 2.0 + 1.0;
+  vec4 s1 = floor(b1) * 2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+
+float hash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Chrome heightfield: liquid mercury surface
+float chromeHeight(vec2 uv, float t, float audio) {
+  // Large slow-moving blobs (mercury pools)
+  float h = snoise(vec3(uv * 2.5, t * 0.25)) * 0.4;
+  // Medium detail (flowing rivulets)
+  h += snoise(vec3(uv * 5.0 + 10.0, t * 0.5)) * 0.25;
+  // Fine ripples (voice-reactive)
+  h += snoise(vec3(uv * 12.0 + 20.0, t * 1.2)) * 0.15 * (0.3 + audio * 2.0);
+  // Micro detail (surface tension)
+  h += snoise(vec3(uv * 25.0 + 40.0, t * 0.8)) * 0.08;
+  // Audio-driven wave pulses
+  float wave = sin(length(uv - 0.5) * 20.0 - t * 6.0) * audio * 0.15;
+  h += wave;
+  return h;
+}
+
+// Compute normal from heightfield via central differences
+vec3 chromeNormal(vec2 uv, float t, float audio) {
+  float eps = 0.003;
+  float hL = chromeHeight(uv - vec2(eps, 0.0), t, audio);
+  float hR = chromeHeight(uv + vec2(eps, 0.0), t, audio);
+  float hD = chromeHeight(uv - vec2(0.0, eps), t, audio);
+  float hU = chromeHeight(uv + vec2(0.0, eps), t, audio);
+  vec3 n = normalize(vec3(hL - hR, hD - hU, eps * 6.0));
+  return n;
+}
+
+// Chrome environment map — fake HDR studio reflections
+vec3 envMap(vec3 r, float procMix) {
+  // Studio-style horizontal light bands
+  float y = r.y;
+  float x = r.x;
+
+  float band1 = exp(-pow((y - 0.4) * 3.5, 2.0));
+  float band2 = exp(-pow((y + 0.1) * 4.0, 2.0)) * 0.7;
+  float band3 = exp(-pow((y - 0.8) * 5.0, 2.0)) * 0.5;
+  float band4 = exp(-pow((y + 0.6) * 3.0, 2.0)) * 0.4;
+
+  // Vertical window reflections
+  float vb1 = exp(-pow((x - 0.3) * 4.0, 2.0)) * 0.3;
+  float vb2 = exp(-pow((x + 0.5) * 3.5, 2.0)) * 0.25;
+
+  float lum = 0.06 + band1 + band2 + band3 + band4 + vb1 + vb2;
+
+  // Silver palette
+  vec3 dark = vec3(0.08, 0.09, 0.12);
+  vec3 mid = vec3(0.55, 0.57, 0.65);
+  vec3 bright = vec3(0.92, 0.93, 0.97);
+  vec3 peak = vec3(1.0, 0.99, 0.97);
+
+  // Gold palette
+  vec3 darkG = vec3(0.12, 0.08, 0.02);
+  vec3 midG = vec3(0.65, 0.50, 0.15);
+  vec3 brightG = vec3(0.95, 0.82, 0.35);
+  vec3 peakG = vec3(1.0, 0.95, 0.65);
+
+  vec3 col;
+  if (lum < 0.3) {
+    col = mix(mix(dark, darkG, procMix), mix(mid, midG, procMix), lum / 0.3);
+  } else if (lum < 0.7) {
+    col = mix(mix(mid, midG, procMix), mix(bright, brightG, procMix), (lum - 0.3) / 0.4);
+  } else {
+    col = mix(mix(bright, brightG, procMix), mix(peak, peakG, procMix), (lum - 0.7) / 0.3);
+  }
+
+  return col;
+}
+
+void main() {
+  vec2 uv = vUv;
+  float t = uTime;
+  float audio = uAudio;
+  float procMix = uProcessing;
+
+  // ── Edge distance (in logical pixels via dpr uniform) ──
+  vec2 logicalPos = uv * uRes / uDpr;
+  vec2 logicalSize = uRes / uDpr;
+  float dL = logicalPos.x;
+  float dR = logicalSize.x - logicalPos.x;
+  float dT = logicalPos.y;
+  float dB = logicalSize.y - logicalPos.y;
+  float pxFromEdge = min(min(dL, dR), min(dT, dB));
+
+  // 150 logical pixel band
+  float bandPx = 150.0;
+
+  // Edge mask: 1.0 at screen border, 0.0 at 150px inward
+  float edgeMask = 1.0 - smoothstep(0.0, bandPx, pxFromEdge);
+
+  // Early discard for center
+  if (edgeMask < 0.001) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  // ── Liquid chrome surface ──
+  // Use aspect-corrected UV for the heightfield
+  vec2 chromUv = uv * vec2(uRes.x / uRes.y, 1.0);
+
+  float height = chromeHeight(chromUv, t, audio);
+  vec3 normal = chromeNormal(chromUv, t, audio);
+
+  // View direction
+  vec3 viewDir = vec3(0.0, 0.0, 1.0);
+
+  // Reflection
+  vec3 refl = reflect(-viewDir, normal);
+  vec3 envCol = envMap(refl, procMix);
+
+  // Fresnel: more reflective at grazing angles
+  float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+  fresnel = 0.6 + 0.4 * fresnel;
+
+  // Specular highlights (3 virtual lights for depth)
+  vec3 L1 = normalize(vec3(0.4, 0.7, 0.6));
+  vec3 L2 = normalize(vec3(-0.6, 0.3, 0.7));
+  vec3 L3 = normalize(vec3(0.0, -0.8, 0.5));
+
+  vec3 H1 = normalize(L1 + viewDir);
+  vec3 H2 = normalize(L2 + viewDir);
+  vec3 H3 = normalize(L3 + viewDir);
+
+  float spec1 = pow(max(dot(normal, H1), 0.0), 128.0);
+  float spec2 = pow(max(dot(normal, H2), 0.0), 64.0);
+  float spec3 = pow(max(dot(normal, H3), 0.0), 96.0);
+
+  vec3 specColor = mix(vec3(1.0, 0.99, 0.97), vec3(1.0, 0.95, 0.7), procMix);
+
+  // Compose chrome color
+  vec3 color = envCol * fresnel;
+  color += specColor * (spec1 * 0.8 + spec2 * 0.4 + spec3 * 0.5);
+
+  // Height-based brightness variation (pools vs ridges)
+  float heightBright = smoothstep(-0.5, 0.5, height) * 0.3 + 0.7;
+  color *= heightBright;
+
+  // Audio-reactive intensity
+  color *= 1.0 + audio * 0.3;
+
+  // ── Metaball-like blobs along edges ──
+  // Create organic shapes that cluster near the edges
+  float blobField = 0.0;
+  for (int i = 0; i < 10; i++) {
+    float fi = float(i);
+    float phase = fi * 0.628318 + t * (0.15 + fi * 0.03);
+
+    // Blobs orbit along screen perimeter
+    float perimeter = mod(phase * 0.5 + fi * 0.37, 4.0);
+    vec2 blobPos;
+    if (perimeter < 1.0) {
+      blobPos = vec2(perimeter, 0.0); // top
+    } else if (perimeter < 2.0) {
+      blobPos = vec2(1.0, perimeter - 1.0); // right
+    } else if (perimeter < 3.0) {
+      blobPos = vec2(3.0 - perimeter, 1.0); // bottom
+    } else {
+      blobPos = vec2(0.0, 4.0 - perimeter); // left
+    }
+
+    // Slight inward offset (blobs hover just inside the edge)
+    vec2 center = vec2(0.5);
+    vec2 toCenter = normalize(center - blobPos);
+    blobPos += toCenter * (0.02 + sin(t * 0.4 + fi) * 0.015);
+
+    float r = 0.06 + audio * 0.04 + sin(t * 0.6 + fi * 1.7) * 0.02;
+    float d = length(uv - blobPos);
+    blobField += r * r / (d * d + 0.001);
+  }
+
+  // Threshold for metaball surface
+  float blobMask = smoothstep(0.8, 1.5, blobField);
+
+  // Blend blobs into chrome: thicker chrome where blobs are
+  float chromeIntensity = max(edgeMask, blobMask * edgeMask * 1.5);
+  chromeIntensity = clamp(chromeIntensity, 0.0, 1.0);
+
+  // Base alpha: chrome surface opacity
+  float alpha = chromeIntensity * 0.88;
+
+  // Extra brightness in blob centers
+  float blobHighlight = smoothstep(1.2, 2.5, blobField) * 0.4;
+  color += specColor * blobHighlight;
+
+  // ── Ambient edge glow (subtle chrome sheen even without blobs) ──
+  float ambientGlow = pow(edgeMask, 2.0) * 0.15;
+  vec3 glowColor = mix(vec3(0.5, 0.52, 0.6), vec3(0.6, 0.5, 0.2), procMix);
+  color += glowColor * ambientGlow;
+
+  // ── Error flash ──
+  if (uError > 0.01) {
+    vec3 redFlash = vec3(1.0, 0.1, 0.05);
+    color = mix(color, redFlash, uError * 0.8);
+    alpha = max(alpha, uError * 0.6 * edgeMask);
+  }
+
+  // ── Celebration burst ──
+  if (uCelebration > 0.01) {
+    float ci = uCelebration;
+    vec3 burstCol = mix(vec3(1.0, 0.98, 0.96), vec3(1.0, 0.93, 0.65), procMix);
+
+    // Sparkle points scattered near edges
+    float sparkle = 0.0;
+    for (int i = 0; i < 16; i++) {
+      vec2 sp = vec2(hash(vec2(float(i) * 7.13, 3.71)),
+                     hash(vec2(float(i) * 3.37, 7.19)));
+      float d = length(uv - sp);
+      float twinkle = sin(t * 20.0 + float(i) * 2.1) * 0.5 + 0.5;
+      sparkle += exp(-d * 50.0) * twinkle * ci;
+    }
+
+    color += burstCol * ci * 0.6 * edgeMask;
+    color += vec3(1.0, 0.97, 0.9) * sparkle;
+    alpha = max(alpha, ci * 0.5 * edgeMask);
+  }
+
+  // ── Breathing ──
+  float breath = 0.92 + 0.08 * sin(t * 0.35);
+  color *= breath;
+
+  // ── Final compositing ──
+  alpha *= uFade;
+  alpha = clamp(alpha, 0.0, 1.0);
+  color = clamp(color, 0.0, 1.0);
+
+  fragColor = vec4(color * alpha, alpha);
+}`;
+
+// ── Setup WebGL ──
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:', gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error('Program link error:', gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+// Full-screen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'uTime');
+const uAudio = gl.getUniformLocation(prog, 'uAudio');
+const uFade = gl.getUniformLocation(prog, 'uFade');
+const uProc = gl.getUniformLocation(prog, 'uProcessing');
+const uErr = gl.getUniformLocation(prog, 'uError');
+const uCeleb = gl.getUniformLocation(prog, 'uCelebration');
+const uRes = gl.getUniformLocation(prog, 'uRes');
+const uDpr = gl.getUniformLocation(prog, 'uDpr');
+
+let rafHandle = null;
+let smoothError = 0, smoothCelebration = 0;
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+function render() {
+  rafHandle = requestAnimationFrame(render);
+
+  // Smooth audio (fast attack, slow release)
+  smoothAudio = audioLevel > smoothAudio
+    ? smoothAudio * 0.25 + audioLevel * 0.75
+    : smoothAudio * 0.94 + audioLevel * 0.06;
+
+  // Fade: ~0.6s in, ~1.8s out
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + 0.05);
+  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - 0.018);
+
+  // Processing mode transition
+  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * 0.04;
+
+  // Error decay (~1s)
+  smoothError *= 0.94;
+
+  // Celebration decay (~0.6s)
+  smoothCelebration *= 0.92;
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (fadeProgress > 0.01 || smoothError > 0.01 || smoothCelebration > 0.01) {
+    const t = performance.now() / 1000;
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uAudio, Math.min(smoothAudio * 2.5, 0.85));
+    gl.uniform1f(uFade, fadeProgress);
+    gl.uniform1f(uProc, smoothProcessing);
+    gl.uniform1f(uErr, smoothError);
+    gl.uniform1f(uCeleb, smoothCelebration);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uDpr, window.devicePixelRatio || 2);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    // Nothing visible — stop RAF to save battery
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+}
+render();
+
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
+// ── API ──
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; }
+  else { ensureRafRunning(); }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) ensureRafRunning();
+};
+
+window.setError = (on) => {
+  if (on) {
+    smoothError = 1.0;
+    ensureRafRunning();
+  }
+};
+
+window.setCelebration = () => {
+  smoothCelebration = 1.0;
+  ensureRafRunning();
+};
+</script>
+</body></html>
