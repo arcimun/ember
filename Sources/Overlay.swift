@@ -6,7 +6,7 @@ import WebKit
 // Organic, living, voice-reactive flames on screen edges
 // ═══════════════════════════════════════════════════════════════════
 
-class PlasmaOverlayWindow: NSWindow {
+class PlasmaOverlayWindow: NSWindow, WKNavigationDelegate {
     var webView: WKWebView!
     var audioTimer: Timer?
     var audioLevel: Float = 0  // Set externally by recorder
@@ -43,6 +43,10 @@ class PlasmaOverlayWindow: NSWindow {
         webView.layer?.isOpaque = false
         contentView = webView
 
+        // Hide webView until theme HTML fully loads (prevents yellow/white flash)
+        webView.isHidden = true
+        webView.navigationDelegate = self
+
         // Adapt to screen changes (switching between MacBook ↔ external display)
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
@@ -58,6 +62,11 @@ class PlasmaOverlayWindow: NSWindow {
         setFrame(screen.frame, display: true)
         webView.frame = NSRect(origin: .zero, size: screen.frame.size)
         log("🖥️ Overlay adapted to screen: \(Int(screen.frame.width))x\(Int(screen.frame.height))")
+    }
+
+    // Reveal webView when theme HTML finishes loading (prevents flash of default BG)
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.isHidden = false
     }
 
     func loadTheme(_ name: String) {
