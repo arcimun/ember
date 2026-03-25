@@ -35,6 +35,9 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/Mac
 echo "Signing..."
 codesign --force --deep --sign - --identifier com.arcimun.ember "$APP" 2>&1
 
+# Remove quarantine flag (prevents Gatekeeper blocking locally built apps)
+xattr -cr "$APP" 2>/dev/null || true
+
 echo "Stopping old instances..."
 pkill -f Ember 2>/dev/null || true
 sleep 1
