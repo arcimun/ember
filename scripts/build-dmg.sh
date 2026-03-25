@@ -57,5 +57,52 @@ else
 fi
 
 rm -rf "${STAGING}"
+
+DMG_SIZE=$(wc -c < "${DMG_PATH}" | tr -d ' ')
 echo ""
 echo "Done: ${DMG_PATH} created ($(du -h "${DMG_PATH}" | cut -f1))"
+
+# ── Auto-sign for Sparkle and show appcast snippet ──
+SIGN_TOOL=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+if [ -x "${SIGN_TOOL}" ]; then
+    echo ""
+    echo "Signing for Sparkle..."
+    SIGN_OUTPUT=$("${SIGN_TOOL}" "${DMG_PATH}" 2>&1)
+    ED_SIG=$(echo "${SIGN_OUTPUT}" | grep -o 'sparkle:edSignature="[^"]*"' | cut -d'"' -f2)
+    SIGN_LEN=$(echo "${SIGN_OUTPUT}" | grep -o 'length="[^"]*"' | cut -d'"' -f2)
+
+    if [ -n "${ED_SIG}" ]; then
+        # Get correct day of week
+        DOW=$(date -jf "%Y-%m-%d" "$(date +%Y-%m-%d)" "+%a")
+        PUB_DATE=$(date -u "+${DOW}, %d %b %Y %H:%M:%S +0000")
+
+        echo ""
+        echo "=== APPCAST SNIPPET (paste as first <item>) ==="
+        echo "    <item>"
+        echo "      <title>Version ${VERSION}</title>"
+        echo "      <sparkle:version>${VERSION}</sparkle:version>"
+        echo "      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>"
+        echo "      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>"
+        echo "      <pubDate>${PUB_DATE}</pubDate>"
+        echo "      <enclosure"
+        echo "        url=\"https://github.com/arcimun/ember/releases/download/v${VERSION}/${APP_NAME}-${VERSION}.dmg\""
+        echo "        type=\"application/octet-stream\""
+        echo "        sparkle:edSignature=\"${ED_SIG}\""
+        echo "        length=\"${SIGN_LEN}\""
+        echo "      />"
+        echo "    </item>"
+        echo "=== END SNIPPET ==="
+    fi
+fi
+
+# ── Verify version consistency ──
+echo ""
+echo "Version consistency check:"
+PLIST_VER=$(grep -A1 CFBundleVersion Resources/Info.plist | tail -1 | sed 's/.*<string>//' | sed 's/<.*//')
+FILE_VER=$(cat VERSION 2>/dev/null | tr -d '[:space:]')
+echo "  VERSION file:  ${FILE_VER:-MISSING}"
+echo "  Info.plist:    ${PLIST_VER} (template, replaced with ${VERSION} at build)"
+echo "  Build version: ${VERSION}"
+if [ "${FILE_VER}" != "${VERSION}" ]; then
+    echo "  ⚠️  WARNING: VERSION file (${FILE_VER}) != build version (${VERSION})"
+fi
