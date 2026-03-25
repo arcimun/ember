@@ -25,15 +25,11 @@
 brew install --cask arcimun/tap/ember
 ```
 
-**DMG** — download from [Releases](https://github.com/arcimun/ember/releases/latest), open and drag to Applications. Then run:
+**Installer (.pkg)** — download `Ember-x.x.x.pkg` from [Releases](https://github.com/arcimun/ember/releases/latest). Double-click, follow the wizard — done. The installer handles permissions automatically.
 
-```bash
-xattr -cr /Applications/Ember.app
-```
+> **First launch**: macOS may say "can't be opened because Apple cannot check it for malicious software." Go to **System Settings → Privacy & Security**, scroll down and click **"Open Anyway"**. This is a one-time step — Ember is open-source and not notarized with Apple ($99/yr).
 
-> **Why?** Ember is open-source and not notarized with Apple ($99/yr). macOS Gatekeeper blocks unsigned apps downloaded from the internet. The command above removes the quarantine flag so macOS lets it run. You can verify the source code yourself — it's all in this repo.
-
-**Build from source** (no quarantine issues) — see [below](#building-from-source).
+**Build from source** (no Gatekeeper warnings) — see [below](#building-from-source).
 
 ---
 
