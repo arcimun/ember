@@ -24,6 +24,8 @@ let processing = false, smoothProcessing = 0;
 let errorFlash = 0, celebrationFlash = 0;
 let rafHandle = null;
 let lastTime = 0;
+let frozenEdgeBand = 0; // locks edge band on exit so streams don't collapse to edges
+let exitPhase = false;  // true from setActive(false) until fully faded
 
 // Dynamic edge band: proportional to screen size, expands with audio
 // ~15% of shortest dimension: 13" laptop (900px) → 135px, 27" (1440px) → 216px, 4K (2160px) → 324px
@@ -152,17 +154,22 @@ function render(timestamp) {
     ? smoothAudio * 0.15 + boostedAudio * 0.85
     : smoothAudio * 0.92 + boostedAudio * 0.08;
 
-  // Dynamic edge band: quiet = EDGE_MIN, loud = almost full screen
+  // Dynamic edge band
   const maxEdge = Math.min(W, H) * 0.7;
-  const targetEdge = EDGE_MIN + smoothAudio * (maxEdge - EDGE_MIN);
-  smoothEdgeBand += (targetEdge - smoothEdgeBand) * dt * 4;
+  if (!exitPhase) {
+    // Normal: edge band follows audio
+    const targetEdge = EDGE_MIN + smoothAudio * (maxEdge - EDGE_MIN);
+    smoothEdgeBand += (targetEdge - smoothEdgeBand) * dt * 4;
+  }
+  // During exit: frozenEdgeBand keeps the band where it was — no collapse to edges
 
   // Fade
   if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + dt * 2.0);
-  if (!active && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - dt * 0.6);
+  if (exitPhase && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - dt * 3.3); // ~0.3s fade
 
-  // Processing
-  smoothProcessing += ((processing ? 1 : 0) - smoothProcessing) * dt * 3;
+  // Processing — smooth transition, but NEVER let it reverse (cause speed jump on exit)
+  const procTarget = processing ? 1 : (exitPhase ? smoothProcessing : 0); // hold during exit
+  smoothProcessing += (procTarget - smoothProcessing) * dt * 3;
 
   // Flash decays
   if (errorFlash > 0) errorFlash = Math.max(0, errorFlash - dt * 1.2);
@@ -171,7 +178,11 @@ function render(timestamp) {
   ctx.clearRect(0, 0, W, H);
 
   if (fadeProgress < 0.003) {
-    if (!active) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+    if (!active) {
+      exitPhase = false;
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
     return;
   }
 
@@ -207,25 +218,29 @@ function render(timestamp) {
     ctx.fillStyle = bB;
     ctx.fillRect(0, H - glowW * 0.5, W, glowW * 0.5);
 
-    // Green ambient glow on top of dark backdrop
+    // Ambient glow — shifts from green to cyan-purple during processing
     const ambAlpha = 0.06 * fadeProgress * (0.5 + smoothAudio * 0.5);
+    const ambR = Math.floor(smoothProcessing * 30);
+    const ambG = Math.floor(60 - smoothProcessing * 25);
+    const ambB = Math.floor(15 + smoothProcessing * 50);
     const aL = ctx.createLinearGradient(0, 0, glowW * 0.5, 0);
-    aL.addColorStop(0, `rgba(0,60,15,${ambAlpha})`);
-    aL.addColorStop(1, 'rgba(0,60,15,0)');
+    aL.addColorStop(0, `rgba(${ambR},${ambG},${ambB},${ambAlpha})`);
+    aL.addColorStop(1, `rgba(${ambR},${ambG},${ambB},0)`);
     ctx.fillStyle = aL;
     ctx.fillRect(0, 0, glowW * 0.5, H);
 
     const aR = ctx.createLinearGradient(W, 0, W - glowW * 0.5, 0);
-    aR.addColorStop(0, `rgba(0,60,15,${ambAlpha})`);
-    aR.addColorStop(1, 'rgba(0,60,15,0)');
+    aR.addColorStop(0, `rgba(${ambR},${ambG},${ambB},${ambAlpha})`);
+    aR.addColorStop(1, `rgba(${ambR},${ambG},${ambB},0)`);
     ctx.fillStyle = aR;
     ctx.fillRect(W - glowW * 0.5, 0, glowW * 0.5, H);
   }
 
-  // Speed and brightness multipliers — high base so it's visible even quiet
-  const speedMult = 0.5 + smoothAudio * 2.5;
+  // Speed: during exit, streams are FROZEN (zero movement). Period.
+  const speedMult = exitPhase ? 0 : (0.5 + smoothAudio * 2.5);
   const brightMult = 0.85 + smoothAudio * 1.2;
-  const procSlowdown = 1.0 - smoothProcessing * 0.65;
+  // Processing: gentle drift, NOT frozen (still alive, thinking)
+  const procSlowdown = 1.0 - smoothProcessing * 0.85;
 
   ctx.textBaseline = 'top';
 
@@ -256,8 +271,9 @@ function render(timestamp) {
       const charY = s.y + j * s.fontSize;
       if (charY < -s.fontSize || charY > H) continue;
 
-      // Dynamic edge mask
-      const eMask = edgeAlpha(s.x + s.fontSize * 0.5, charY + s.fontSize * 0.5, smoothEdgeBand);
+      // Edge mask — use frozen band during exit so streams don't collapse
+      const useBand = exitPhase ? frozenEdgeBand : smoothEdgeBand;
+      const eMask = edgeAlpha(s.x + s.fontSize * 0.5, charY + s.fontSize * 0.5, useBand);
       if (eMask < 0.008) continue;
 
       const headDist = j / s.length;
@@ -292,11 +308,13 @@ function render(timestamp) {
         b = Math.floor(trailBoost * 40 + audioColor * 20);
       }
 
-      // Processing: cyan/blue shift
+      // Processing: green → cyan → purple/pink shift ("thinking" state)
       if (smoothProcessing > 0.01) {
-        b = Math.min(255, Math.floor(b + (180 - b) * smoothProcessing * 0.5));
-        r = Math.floor(r * (1 - smoothProcessing * 0.3));
-        g = Math.floor(g * (1 - smoothProcessing * 0.15));
+        const p = smoothProcessing;
+        // Shift toward cyan-purple: boost blue+red tint, reduce green dominance
+        r = Math.min(255, Math.floor(r + (140 - r) * p * 0.6));  // slight magenta
+        g = Math.floor(g * (1 - p * 0.4) + 80 * p);              // reduce green, add cyan base
+        b = Math.min(255, Math.floor(b + (220 - b) * p * 0.8));   // strong blue/cyan
       }
 
       // Error: red
@@ -354,12 +372,15 @@ function render(timestamp) {
     }
   }
 
-  // ── Edge border glow line ──
-  if (fadeProgress > 0.2 && smoothAudio > 0.03) {
-    const lineA = 0.12 * fadeProgress * Math.min(1, smoothAudio * 2);
-    ctx.strokeStyle = `rgba(0,255,65,${lineA.toFixed(3)})`;
+  // ── Edge border glow line (shifts cyan-purple during processing) ──
+  if (fadeProgress > 0.2 && (smoothAudio > 0.03 || exitPhase)) {
+    const lineA = 0.12 * fadeProgress * Math.min(1, smoothAudio * 2 + (exitPhase ? 0.5 : 0));
+    const lineR = Math.floor(smoothProcessing * 100);
+    const lineG = Math.floor(255 - smoothProcessing * 120);
+    const lineB = Math.floor(65 + smoothProcessing * 160);
+    ctx.strokeStyle = `rgba(${lineR},${lineG},${lineB},${lineA.toFixed(3)})`;
     ctx.lineWidth = 0.5;
-    ctx.shadowColor = `rgba(0,255,65,${(lineA * 0.4).toFixed(3)})`;
+    ctx.shadowColor = `rgba(${lineR},${lineG},${lineB},${(lineA * 0.4).toFixed(3)})`;
     ctx.shadowBlur = 4;
     ctx.beginPath();
     ctx.moveTo(0, 0); ctx.lineTo(0, H);
@@ -382,8 +403,13 @@ window.setAudioLevel = (v) => { audioLevel = v; };
 
 window.setActive = (on) => {
   active = on;
-  if (!on) { smoothAudio = 0; audioLevel = 0; }
-  else {
+  if (!on) {
+    audioLevel = 0;
+    exitPhase = true;
+    frozenEdgeBand = smoothEdgeBand; // lock the current spread
+    ensureRaf();
+  } else {
+    exitPhase = false;
     if (streams.length === 0) initStreams();
     ensureRaf();
   }
@@ -391,7 +417,16 @@ window.setActive = (on) => {
 
 window.setProcessing = (on) => {
   processing = on;
-  if (on) ensureRaf();
+  if (on) {
+    ensureRaf();
+  } else {
+    // Processing ended = "done thinking, about to paste"
+    // Start exit immediately — don't wait for setActive(false)
+    exitPhase = true;
+    frozenEdgeBand = smoothEdgeBand;
+    audioLevel = 0;
+    ensureRaf();
+  }
 };
 
 window.setError = (on) => {
@@ -399,6 +434,8 @@ window.setError = (on) => {
 };
 
 window.setCelebration = () => {
+  // During exit: skip celebration — let the fade finish cleanly
+  if (exitPhase) return;
   celebrationFlash = 1.0;
   for (let i = 0; i < streams.length; i++) {
     streams[i].speed = streams[i].baseSpeed * 4;

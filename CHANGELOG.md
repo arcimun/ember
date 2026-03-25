@@ -2,6 +2,26 @@
 
 All notable changes to Ember will be documented in this file.
 
+## [1.7.0] - 2026-03-25
+
+### Added
+- **10 new overlay themes** — Digital Rain (Matrix), Bioluminescence (deep ocean), Geometric HUD (Iron Man), Circuit Trace (neon PCB), Pulse Rings (sonar), Liquid Chrome (metallic), Sound Terrain (3D topography), Ink Bleed (watercolor), Crystal Frost (ice), Waveform Bar (equalizer). Total: 15 themes.
+- **Digital Rain as default theme** — new installs start with Matrix-style overlay
+- **Adaptive display scaling** — EDGE_MIN scales to 17% of screen height (works from 13" MacBook to 4K displays)
+- **Dynamic Matrix spread** — quiet speech = edges only, loud = Matrix covers the entire screen
+- **3-layer parallax depth** in Digital Rain — far (tiny/dim), mid, near (large/bright) for 3D feel
+- **Dark backdrop** behind theme overlay — ensures visibility on light backgrounds
+
+### Improved
+- **Smooth exit animation** — streams freeze in place and dissolve (no more "falling down" effect)
+- **Processing color shift** — green → cyan/purple during "thinking" state
+- **Audio sensitivity boost** (2.5x) — normal speech clearly activates the overlay
+- **CI auto-update appcast.xml** — Sparkle appcast is now automatically signed and committed on every release tag, so auto-updates never go stale
+
+### Changed
+- Default theme: `violet-flame` → `digital-rain`
+- Fallback theme: `violet-flame` → `digital-rain`
+
 ## [1.6.0] - 2026-03-25
 
 ### Added
