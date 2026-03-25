@@ -10,25 +10,12 @@
       <sparkle:version>1.8.0.0</sparkle:version>
       <sparkle:shortVersionString>1.8.0.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <pubDate>Tue, 25 Mar 2026 21:30:00 +0000</pubDate>
+      <pubDate>Wed, 25 Mar 2026 20:31:50 +0000</pubDate>
       <enclosure
         url="https://github.com/arcimun/ember/releases/download/v1.8.0.0/Ember-1.8.0.0.dmg"
         type="application/octet-stream"
-        sparkle:edSignature="W/fMS3t9kfG6YAxlSuojUiZk2jGinjWcTiCw1CRavqF4SzNWDhWB/8S7KYFw9HRuBqdwuOem7Tx5eIGRYlVdBA=="
-        length="1632434"
-      />
-    </item>
-    <item>
-      <title>Version 1.7.0.0</title>
-      <sparkle:version>1.7.0.0</sparkle:version>
-      <sparkle:shortVersionString>1.7.0.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <pubDate>Wed, 25 Mar 2026 11:58:31 +0000</pubDate>
-      <enclosure
-        url="https://github.com/arcimun/ember/releases/download/v1.7.0.0/Ember-1.7.0.0.dmg"
-        type="application/octet-stream"
-        sparkle:edSignature="IJkOmCpDiXb27Kmjz2LuhXWMoVVlfGwO4veGvzXpezWN9IiawIT1tXlvMXuF1dXsxgyb/iJLUk/ndoz4XGaECQ=="
-        length="287470"
+        sparkle:edSignature="kApf56+60otuzMA/BONloMKfnkOESzyqSMosauWgWlBpa5PRrivcakhnwcVFvcakrrfEuPYpT+NWEPzLJAnZBw=="
+        length="293907"
       />
     </item>
   </channel>
