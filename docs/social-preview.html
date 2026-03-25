@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1280" />
+  <title>Ember — Social Preview</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 1280px;
+      height: 640px;
+      overflow: hidden;
+      background-color: #0a0a16;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+      position: relative;
+    }
+
+    /* ── Base layer: deep background ── */
+    .bg {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 900px 500px at 50% 50%,  #1a0a2e 0%, transparent 70%),
+        radial-gradient(ellipse 600px 300px at 20% 80%,  #2d0a3e 0%, transparent 60%),
+        radial-gradient(ellipse 500px 280px at 80% 20%,  #1e0830 0%, transparent 60%),
+        #0a0a16;
+    }
+
+    /* ── Edge plasma glows ── */
+    .glow-top-left {
+      position: absolute;
+      top: -120px;
+      left: -120px;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      background: radial-gradient(circle,
+        rgba(124, 58, 237, 0.55) 0%,
+        rgba(168, 85, 247, 0.30) 30%,
+        rgba(236, 72, 153, 0.12) 55%,
+        transparent 70%
+      );
+      filter: blur(40px);
+    }
+
+    .glow-top-right {
+      position: absolute;
+      top: -80px;
+      right: -80px;
+      width: 520px;
+      height: 520px;
+      border-radius: 50%;
+      background: radial-gradient(circle,
+        rgba(236, 72, 153, 0.50) 0%,
+        rgba(168, 85, 247, 0.28) 35%,
+        rgba(124, 58, 237, 0.10) 60%,
+        transparent 72%
+      );
+      filter: blur(50px);
+    }
+
+    .glow-bottom-left {
+      position: absolute;
+      bottom: -100px;
+      left: -60px;
+      width: 480px;
+      height: 480px;
+      border-radius: 50%;
+      background: radial-gradient(circle,
+        rgba(249, 115, 22, 0.35) 0%,
+        rgba(236, 72, 153, 0.22) 35%,
+        rgba(124, 58, 237, 0.08) 60%,
+        transparent 72%
+      );
+      filter: blur(55px);
+    }
+
+    .glow-bottom-right {
+      position: absolute;
+      bottom: -80px;
+      right: -60px;
+      width: 500px;
+      height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(circle,
+        rgba(124, 58, 237, 0.45) 0%,
+        rgba(249, 115, 22, 0.18) 40%,
+        transparent 68%
+      );
+      filter: blur(50px);
+    }
+
+    /* ── Center subtle pulse ── */
+    .glow-center {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 700px;
+      height: 340px;
+      border-radius: 50%;
+      background: radial-gradient(ellipse,
+        rgba(168, 85, 247, 0.14) 0%,
+        rgba(124, 58, 237, 0.07) 50%,
+        transparent 75%
+      );
+      filter: blur(30px);
+    }
+
+    /* ── Thin border lines ── */
+    .border-top {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(168, 85, 247, 0.6) 25%,
+        rgba(236, 72, 153, 0.8) 50%,
+        rgba(168, 85, 247, 0.6) 75%,
+        transparent 100%
+      );
+    }
+
+    .border-bottom {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(249, 115, 22, 0.4) 20%,
+        rgba(236, 72, 153, 0.5) 50%,
+        rgba(168, 85, 247, 0.4) 80%,
+        transparent 100%
+      );
+    }
+
+    /* ── Corner accent lines ── */
+    .corner {
+      position: absolute;
+      width: 80px;
+      height: 80px;
+    }
+
+    .corner-tl {
+      top: 32px;
+      left: 32px;
+      border-top: 1.5px solid rgba(168, 85, 247, 0.5);
+      border-left: 1.5px solid rgba(168, 85, 247, 0.5);
+    }
+
+    .corner-tr {
+      top: 32px;
+      right: 32px;
+      border-top: 1.5px solid rgba(236, 72, 153, 0.5);
+      border-right: 1.5px solid rgba(236, 72, 153, 0.5);
+    }
+
+    .corner-bl {
+      bottom: 32px;
+      left: 32px;
+      border-bottom: 1.5px solid rgba(249, 115, 22, 0.4);
+      border-left: 1.5px solid rgba(249, 115, 22, 0.4);
+    }
+
+    .corner-br {
+      bottom: 32px;
+      right: 32px;
+      border-bottom: 1.5px solid rgba(168, 85, 247, 0.4);
+      border-right: 1.5px solid rgba(168, 85, 247, 0.4);
+    }
+
+    /* ── Icon ── */
+    .icon-wrap {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -180px);
+    }
+
+    .icon {
+      width: 80px;
+      height: 80px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, #7c3aed 0%, #a855f7 40%, #ec4899 100%);
+      box-shadow:
+        0 0 40px rgba(168, 85, 247, 0.6),
+        0 0 80px rgba(124, 58, 237, 0.3),
+        inset 0 1px 0 rgba(255,255,255,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto;
+    }
+
+    /* Flame/spark icon using pure CSS */
+    .icon svg {
+      width: 42px;
+      height: 42px;
+      filter: drop-shadow(0 0 8px rgba(255, 180, 80, 0.9));
+    }
+
+    /* ── Content ── */
+    .content {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      width: 900px;
+    }
+
+    .title {
+      font-size: 120px;
+      font-weight: 700;
+      letter-spacing: -4px;
+      line-height: 1;
+      background: linear-gradient(135deg,
+        #e8d5ff 0%,
+        #c084fc 25%,
+        #a855f7 50%,
+        #ec4899 75%,
+        #f97316 100%
+      );
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      filter: drop-shadow(0 0 30px rgba(168, 85, 247, 0.4));
+      margin-bottom: 20px;
+    }
+
+    .tagline {
+      font-size: 28px;
+      font-weight: 300;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: rgba(216, 180, 254, 0.75);
+      margin-bottom: 0;
+    }
+
+    /* ── Bottom bar ── */
+    .bottom {
+      position: absolute;
+      bottom: 52px;
+      left: 0;
+      right: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+    }
+
+    .bottom-pill {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .pill-item {
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+    }
+
+    .pill-item.violet { color: rgba(167, 139, 250, 0.85); }
+    .pill-item.pink   { color: rgba(244, 114, 182, 0.85); }
+    .pill-item.orange { color: rgba(251, 146, 60, 0.85); }
+
+    .dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: rgba(168, 85, 247, 0.5);
+    }
+
+    /* ── Noise texture overlay ── */
+    .noise {
+      position: absolute;
+      inset: 0;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      pointer-events: none;
+    }
+
+    /* ── Waveform decoration ── */
+    .wave-wrap {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, 96px);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0.45;
+    }
+
+    .wave-bar {
+      width: 3px;
+      border-radius: 2px;
+      background: linear-gradient(to top, #7c3aed, #ec4899);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Background -->
+  <div class="bg"></div>
+
+  <!-- Edge plasma glows -->
+  <div class="glow-top-left"></div>
+  <div class="glow-top-right"></div>
+  <div class="glow-bottom-left"></div>
+  <div class="glow-bottom-right"></div>
+  <div class="glow-center"></div>
+
+  <!-- Border lines -->
+  <div class="border-top"></div>
+  <div class="border-bottom"></div>
+
+  <!-- Corner accents -->
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+
+  <!-- Main content -->
+  <div class="content">
+    <div class="title">Ember</div>
+    <div class="tagline">Voice to text for macOS</div>
+  </div>
+
+  <!-- Waveform bars -->
+  <div class="wave-wrap">
+    <div class="wave-bar" style="height:8px;"></div>
+    <div class="wave-bar" style="height:16px;"></div>
+    <div class="wave-bar" style="height:24px;"></div>
+    <div class="wave-bar" style="height:32px;background:linear-gradient(to top,#a855f7,#f97316);"></div>
+    <div class="wave-bar" style="height:44px;background:linear-gradient(to top,#7c3aed,#ec4899);"></div>
+    <div class="wave-bar" style="height:56px;background:linear-gradient(to top,#6d28d9,#f97316);"></div>
+    <div class="wave-bar" style="height:44px;background:linear-gradient(to top,#7c3aed,#ec4899);"></div>
+    <div class="wave-bar" style="height:36px;background:linear-gradient(to top,#a855f7,#f97316);"></div>
+    <div class="wave-bar" style="height:56px;background:linear-gradient(to top,#7c3aed,#ec4899);opacity:0.9;"></div>
+    <div class="wave-bar" style="height:68px;background:linear-gradient(to top,#6d28d9,#ec4899);"></div>
+    <div class="wave-bar" style="height:80px;background:linear-gradient(to top,#7c3aed,#f97316);"></div>
+    <div class="wave-bar" style="height:96px;background:linear-gradient(to top,#a855f7,#ec4899);"></div>
+    <div class="wave-bar" style="height:80px;background:linear-gradient(to top,#7c3aed,#f97316);"></div>
+    <div class="wave-bar" style="height:68px;background:linear-gradient(to top,#6d28d9,#ec4899);"></div>
+    <div class="wave-bar" style="height:56px;background:linear-gradient(to top,#7c3aed,#ec4899);opacity:0.9;"></div>
+    <div class="wave-bar" style="height:36px;background:linear-gradient(to top,#a855f7,#f97316);"></div>
+    <div class="wave-bar" style="height:44px;background:linear-gradient(to top,#7c3aed,#ec4899);"></div>
+    <div class="wave-bar" style="height:56px;background:linear-gradient(to top,#6d28d9,#f97316);"></div>
+    <div class="wave-bar" style="height:44px;background:linear-gradient(to top,#7c3aed,#ec4899);"></div>
+    <div class="wave-bar" style="height:32px;background:linear-gradient(to top,#a855f7,#f97316);"></div>
+    <div class="wave-bar" style="height:24px;"></div>
+    <div class="wave-bar" style="height:16px;"></div>
+    <div class="wave-bar" style="height:8px;"></div>
+  </div>
+
+  <!-- Bottom text -->
+  <div class="bottom">
+    <div class="bottom-pill">
+      <span class="pill-item violet">Free</span>
+      <div class="dot"></div>
+      <span class="pill-item pink">Open Source</span>
+      <div class="dot"></div>
+      <span class="pill-item orange">Beautiful</span>
+    </div>
+  </div>
+
+  <!-- Noise -->
+  <div class="noise"></div>
+
+</body>
+</html>
