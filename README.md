@@ -1,8 +1,8 @@
 # Ember
 
-> Voice to text for macOS. Fast. Beautiful. Free.
-
-![Ember Demo](docs/demo.gif)
+<p align="center">
+  <img src="docs/header.png" alt="Ember — Speak. It types." width="100%">
+</p>
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black?logo=apple) ![MIT License](https://img.shields.io/badge/license-MIT-blue) ![Homebrew](https://img.shields.io/badge/brew-arcimun%2Ftap%2Fember-orange?logo=homebrew) [![Latest Release](https://img.shields.io/github/v/release/arcimun/ember)](https://github.com/arcimun/ember/releases/latest)
 
