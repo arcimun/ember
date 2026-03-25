@@ -34,7 +34,7 @@ bash install.sh
 
 Without Accessibility: everything works except auto-paste (Cmd+V). Use manual paste.
 
-**Prerequisites:** None — audio recording uses native AVAudioEngine (no external dependencies).
+**Prerequisites:** Swift 6.2+ — audio recording uses native AVAudioEngine (no external dependencies).
 
 ## Architecture
 
@@ -60,7 +60,7 @@ Sources/
 | `Resources/themes/*.html` | WebGL2 GLSL themes (violet-flame, aurora, nebula, solar, minimal) |
 | `install.sh` | Build + sign + copy to /Applications/ |
 | `scripts/build-dmg.sh` | Build + create distributable DMG |
-| `Package.swift` | SPM config (macOS 14+, Sparkle dependency) |
+| `Package.swift` | SPM config (macOS 13+, Sparkle dependency) |
 | `.github/workflows/release.yml` | CI: build + DMG + GitHub Release on tag push |
 
 ## Config
@@ -125,7 +125,7 @@ On tag push (`v*`), `.github/workflows/release.yml`:
 ## Known Quirks
 
 - Audio recording uses native AVAudioEngine — no external dependencies
-- AVAudioConverter resamples from mic's native rate (usually 48kHz) to 16kHz mono for Groq Whisper
+- Audio resampling: records at mic's native rate (48kHz), converts to 16kHz mono WAV via `afconvert` shell command (not Swift API)
 - LLM hallucination guard: if corrected text >3x raw length, falls back to raw
 
 ## History
@@ -139,47 +139,21 @@ Sessions saved as JSON in `~/.config/ember/history/` (filename: `YYYY-MM-DD_HH-m
 ## Build & Test
 
 ```bash
-# Build
-swift build -c release
-
-# Install locally
-bash install.sh
-
-# Create DMG
-bash scripts/build-dmg.sh 1.0.0
-
-# Manual test checklist (no automated tests — Swift single-file app)
-# 1. Launch: open /Applications/Ember.app
-# 2. Hotkey: press ` — recording starts, menu bar shows waveform
-# 3. Speak, press ` — processing (ellipsis.circle), then auto-paste
-# 4. Escape during recording — cancel, text saved to clipboard
-# 5. No API key: first-run dialog appears
+swift build -c release    # Build
+swift test                # XCTest (ConfigTests, RecorderTests)
+bash install.sh           # Build + install to /Applications/
+bash scripts/build-dmg.sh 1.0.0  # Create DMG
 ```
+
+After each rebuild: CDHash changes → macOS revokes Accessibility permission. Run `tccutil reset Accessibility com.arcimun.ember` and re-add in System Settings.
 
 ## Release Process
 
-gstack `/ship` workflow adapted for Ember:
+`/ship` → bump VERSION → CHANGELOG → commit → push → tag → CI builds DMG + GitHub Release.
 
-```
-/ship → bump VERSION → CHANGELOG entry → commit → push → tag
-     → GitHub Actions builds DMG → GitHub Release created
-     → manual: sign_update DMG → update appcast.xml → push
-     → manual: update homebrew-tap SHA256 → push
-```
+**Manual post-CI:** sign DMG (`sign_update`), update `appcast.xml` + push, update `homebrew-tap` SHA256 + push.
 
-Step-by-step:
-1. `/ship` bumps `VERSION`, appends to `CHANGELOG.md`, commits, pushes
-2. Create tag: `git tag v$(cat VERSION | tr -d '[:space:]' | sed 's/\.[0-9]*$//')` → push tag
-3. CI builds DMG and publishes GitHub Release automatically
-4. Sign new DMG: `.build/artifacts/sparkle/Sparkle/bin/sign_update dist/Ember-X.Y.Z.dmg`
-5. Update `appcast.xml` with new version entry + EdDSA signature → push
-6. Update `Casks/ember.rb` in `arcimun/homebrew-tap` with new SHA256 → push
-
-Key files for release:
-- `VERSION` — 4-digit (MAJOR.MINOR.PATCH.MICRO), bumped by `/ship`
-- `CHANGELOG.md` — appended by `/ship`
-- `appcast.xml` — Sparkle update feed (manual after CI)
-- `.github/workflows/release.yml` — CI trigger on `v*` tags
+Key files: `VERSION` (4-digit), `CHANGELOG.md`, `appcast.xml`, `.github/workflows/release.yml`.
 
 ## Project Metadata
 

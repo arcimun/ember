@@ -100,4 +100,20 @@ class PlasmaOverlayWindow: NSWindow {
             self.isShowing = false
         })
     }
+
+    func flashError() {
+        // Show overlay if not already visible
+        if !isShowing {
+            adaptToScreen()
+            orderFront(nil)
+            alphaValue = 1
+            isShowing = true
+        }
+        webView.evaluateJavaScript("window.setError(true)", completionHandler: nil)
+        // Hide after 0.8s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.webView.evaluateJavaScript("window.setError(false)", completionHandler: nil)
+            self?.hide()
+        }
+    }
 }

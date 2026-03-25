@@ -287,16 +287,8 @@ class HistoryWindowController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
     @objc private func repasteSelected() {
         copySelected()
-        // Simulate Cmd+V (same as normal transcription flow)
-        usleep(80_000)
-        let src = CGEventSource(stateID: .combinedSessionState)
-        if let d = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true) {
-            d.flags = .maskCommand; d.post(tap: .cghidEventTap)
-        }
-        usleep(20_000)
-        if let u = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false) {
-            u.flags = .maskCommand; u.post(tap: .cghidEventTap)
-        }
+        // Simulate Cmd+V via shared utility (non-blocking, checks frontmost app)
+        simulatePaste()
         log("📋 History: re-pasted")
     }
 }

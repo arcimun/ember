@@ -7,6 +7,56 @@ import AVFoundation
 // Audio Recording — WAV file via AVAudioEngine (native)
 // ═══════════════════════════════════════════════════════════════════
 
+// ─── Typed Error Enum ─────────────────────────────────────────────
+enum EmberError: Error {
+    case noApiKey
+    case audioFileError
+    case networkError
+    case httpError(Int, String)
+    case emptyResponse
+    case noSpeechDetected
+    case audioWriteError
+    case engineStartFailed
+    case audioConversionFailed
+    case microphoneAccessDenied
+
+    var userMessage: String {
+        switch self {
+        case .noApiKey:
+            return "No API key set. Open Preferences to add your Groq API key."
+        case .audioFileError:
+            return "Could not access audio file. Check disk space."
+        case .networkError:
+            return "Network error. Check your internet connection."
+        case .httpError(let code, let msg):
+            return "API error \(code): \(msg)"
+        case .emptyResponse:
+            return "Empty response from API. Please try again."
+        case .noSpeechDetected:
+            return "No speech detected. Try speaking louder or closer to the mic."
+        case .audioWriteError:
+            return "Failed to write audio data."
+        case .engineStartFailed:
+            return "Failed to start audio engine. Check microphone permissions."
+        case .audioConversionFailed:
+            return "Failed to convert audio format."
+        case .microphoneAccessDenied:
+            return "Microphone access denied. Enable in System Settings → Privacy → Microphone."
+        }
+    }
+
+    var isRecoverable: Bool {
+        switch self {
+        case .noApiKey, .microphoneAccessDenied:
+            return false
+        case .networkError, .httpError, .emptyResponse, .noSpeechDetected:
+            return true
+        case .audioFileError, .audioWriteError, .engineStartFailed, .audioConversionFailed:
+            return true
+        }
+    }
+}
+
 protocol RecorderDelegate: AnyObject {
     func recorderDidStartRecording()
     func recorderDidStopRecording()
@@ -14,6 +64,7 @@ protocol RecorderDelegate: AnyObject {
     func recorderDidCancel()
     func recorderDidUpdateAudioLevel(_ level: Float)
     func recorderDidStartProcessing()
+    func recorderDidEncounterError(_ error: EmberError)
 }
 
 class Recorder {
@@ -50,6 +101,9 @@ class Recorder {
         } catch {
             log("❌ Cannot create audio file: \(error)")
             isRecording = false
+            DispatchQueue.main.async {
+                self.delegate?.recorderDidEncounterError(.audioFileError)
+            }
             return
         }
 
@@ -70,7 +124,11 @@ class Recorder {
 
             // Write buffer to file on background queue (native format, no conversion)
             self.writeQueue.async { [weak self] in
-                try? self?.audioFile?.write(from: buffer)
+                do {
+                    try self?.audioFile?.write(from: buffer)
+                } catch {
+                    log("⚠️ Audio write error: \(error)")
+                }
             }
         }
 
@@ -83,6 +141,9 @@ class Recorder {
             log("❌ AVAudioEngine: \(error)")
             isRecording = false
             inputNode.removeTap(onBus: 0)
+            DispatchQueue.main.async {
+                self.delegate?.recorderDidEncounterError(.engineStartFailed)
+            }
         }
     }
 
@@ -107,7 +168,12 @@ class Recorder {
 
         // Send WAV to Groq Whisper API
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
-            log("⚠️ No audio file"); isStopping = false; return
+            log("⚠️ No audio file after afconvert")
+            DispatchQueue.main.async {
+                self.delegate?.recorderDidEncounterError(.audioConversionFailed)
+                self.delegate?.recorderDidFinishProcessing(text: "")
+            }
+            isStopping = false; return
         }
 
         let filePath = audioFilePath
@@ -115,12 +181,24 @@ class Recorder {
         let language = config.language
 
         let startTime = self.recordingStartTime
-        transcribeWithGroq(filePath: filePath, apiKey: apiKey, language: language) { [weak self] result in
+        transcribeWithGroq(filePath: filePath, apiKey: apiKey, language: language) { [weak self] result, sttError in
             guard let self = self else { return }
+
+            if let sttError = sttError {
+                log("⚠️ STT error: \(sttError.userMessage)")
+                DispatchQueue.main.async {
+                    self.delegate?.recorderDidEncounterError(sttError)
+                    self.delegate?.recorderDidFinishProcessing(text: "")
+                }
+                try? FileManager.default.removeItem(atPath: filePath)
+                self.isStopping = false
+                return
+            }
 
             guard let result = result, result.text.count > 2 else {
                 log("⚠️ No speech detected")
                 DispatchQueue.main.async {
+                    self.delegate?.recorderDidEncounterError(.noSpeechDetected)
                     self.delegate?.recorderDidFinishProcessing(text: "")
                 }
                 try? FileManager.default.removeItem(atPath: filePath)

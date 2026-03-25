@@ -1,6 +1,7 @@
 import Cocoa
 import Carbon.HIToolbox
 import Sparkle
+import AVFoundation
 
 // ═══════════════════════════════════════════════════════════════════
 //  Ember v1.0.0 — Voice-to-text for macOS
@@ -112,6 +113,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         appDelegateRef = self
         recorder.delegate = self
 
+        // Check microphone access
+        checkMicrophoneAccess()
+
         // Check Accessibility (for CGEvent typing — hotkey works without it)
         if !AXIsProcessTrusted() {
             log("⚠️ Accessibility not granted — text paste may not auto-type")
@@ -166,6 +170,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         // Carbon hotkeys — no Accessibility needed!
         if !setupCarbonHotkeys() {
             setupNSEventFallback()
+        }
+    }
+
+    // ─── Microphone Access ────────────────────────────────────────
+    func checkMicrophoneAccess() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .denied, .restricted:
+            log("⚠️ Microphone access denied")
+            DispatchQueue.main.async { [weak self] in
+                self?.recorderDidEncounterError(.microphoneAccessDenied)
+            }
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                if granted {
+                    log("✅ Microphone access granted")
+                } else {
+                    log("⚠️ Microphone access denied by user")
+                    DispatchQueue.main.async { [weak self] in
+                        self?.recorderDidEncounterError(.microphoneAccessDenied)
+                    }
+                }
+            }
+        case .authorized:
+            log("✅ Microphone access authorized")
+        @unknown default:
+            break
         }
     }
 
@@ -433,17 +464,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         let pb = NSPasteboard.general; pb.clearContents()
         pb.setString(text, forType: .string)
 
-        // Auto-paste: Cmd+V
-        usleep(80_000)
-        let src = CGEventSource(stateID: .combinedSessionState)
-        if let d = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true) {
-            d.flags = .maskCommand; d.post(tap: .cghidEventTap)
-        }
-        usleep(20_000)
-        if let u = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false) {
-            u.flags = .maskCommand; u.post(tap: .cghidEventTap)
-        }
+        // Auto-paste: Cmd+V (via simulatePaste — non-blocking, checks frontmost app)
         log("📋 Pasted \(text.count) chars")
+        simulatePaste()
+    }
+
+    func recorderDidEncounterError(_ error: EmberError) {
+        // Reset processing state and hide overlay
+        setProcessingState(false)
+        setRecordingState(false)
+        setThemeMenuEnabled(true)
+        overlayWindow?.flashError()
+
+        log("⚠️ Error: \(error.userMessage)")
+
+        // Show NSAlert on main thread
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Ember"
+            alert.informativeText = error.userMessage
+            alert.alertStyle = error.isRecoverable ? .warning : .critical
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     func recorderDidCancel() {
@@ -454,6 +497,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
     func recorderDidUpdateAudioLevel(_ level: Float) {
         overlayWindow?.audioLevel = level
+    }
+}
+
+// ─── Shared Paste Utility ────────────────────────────────────────
+/// Simulate Cmd+V paste. Checks frontmost app is not Ember itself.
+/// Uses asyncAfter instead of usleep to avoid blocking the main thread.
+func simulatePaste() {
+    // US-008: Check that a suitable target app is focused
+    let frontmost = NSWorkspace.shared.frontmostApplication
+    guard frontmost != nil, frontmost?.bundleIdentifier != "com.arcimun.ember" else {
+        log("⚠️ No suitable target app for paste — text remains in clipboard")
+        return
+    }
+
+    let src = CGEventSource(stateID: .combinedSessionState)
+    // US-007: Use asyncAfter instead of usleep
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        if let d = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true) {
+            d.flags = .maskCommand; d.post(tap: .cghidEventTap)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            if let u = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false) {
+                u.flags = .maskCommand; u.post(tap: .cghidEventTap)
+            }
+        }
     }
 }
 

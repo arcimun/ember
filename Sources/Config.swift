@@ -128,11 +128,11 @@ func showApiKeyDialog() {
         log("✅ API key saved to \(configPath)")
 
     case .alertSecondButtonReturn:
-        // Get API Key — open browser, then re-show dialog
+        // Get API Key — open browser, then re-show dialog (async to avoid stack overflow)
         if let url = URL(string: "https://console.groq.com/keys") {
             NSWorkspace.shared.open(url)
         }
-        showApiKeyDialog()
+        DispatchQueue.main.async { showApiKeyDialog() }
 
     default:
         // Skip

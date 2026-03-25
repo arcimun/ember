@@ -10,13 +10,13 @@ struct WhisperResult {
     let language: String
 }
 
-func transcribeWithGroq(filePath: String, apiKey: String, language: String, completion: @escaping (WhisperResult?) -> Void) {
+func transcribeWithGroq(filePath: String, apiKey: String, language: String, completion: @escaping (WhisperResult?, EmberError?) -> Void) {
     guard !apiKey.isEmpty else {
-        log("❌ No GROQ_API_KEY!"); completion(nil); return
+        log("❌ No GROQ_API_KEY!"); completion(nil, .noApiKey); return
     }
 
     guard let fileData = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {
-        log("❌ Cannot read audio file"); completion(nil); return
+        log("❌ Cannot read audio file"); completion(nil, .audioFileError); return
     }
 
     let url = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!
@@ -49,21 +49,29 @@ func transcribeWithGroq(filePath: String, apiKey: String, language: String, comp
 
     URLSession.shared.dataTask(with: request) { data, response, error in
         if let error = error {
-            log("❌ Groq STT: \(error.localizedDescription)"); completion(nil); return
+            log("❌ Groq STT: \(error.localizedDescription)"); completion(nil, .networkError); return
         }
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let b = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            log("❌ Groq STT HTTP \(http.statusCode): \(b.prefix(200))"); completion(nil); return
+            log("❌ Groq STT HTTP \(http.statusCode): \(b.prefix(200))")
+            let emberError: EmberError
+            switch http.statusCode {
+            case 401: emberError = .httpError(401, "Invalid API key")
+            case 429: emberError = .httpError(429, "Rate limited")
+            case 500...599: emberError = .httpError(http.statusCode, "Server error")
+            default: emberError = .httpError(http.statusCode, b.isEmpty ? "HTTP error" : String(b.prefix(100)))
+            }
+            completion(nil, emberError); return
         }
         guard let data = data,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = json["text"] as? String,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            log("⚠️ Groq STT: empty"); completion(nil); return
+            log("⚠️ Groq STT: empty"); completion(nil, .noSpeechDetected); return
         }
         let detectedLang = json["language"] as? String ?? "unknown"
         log("🌐 Detected language: \(detectedLang)")
-        completion(WhisperResult(text: text.trimmingCharacters(in: .whitespacesAndNewlines), language: detectedLang))
+        completion(WhisperResult(text: text.trimmingCharacters(in: .whitespacesAndNewlines), language: detectedLang), nil)
     }.resume()
 }
 
