@@ -382,8 +382,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         vadCheckbox.translatesAutoresizingMaskIntoConstraints = false
 
         // ── Align labels ──
-        keyLabel.widthAnchor.constraint(equalTo: langLabel.widthAnchor).isActive = true
-        keyLabel.widthAnchor.constraint(equalTo: llmLabel.widthAnchor).isActive = true
+        let labelWidth: CGFloat = 110
+        keyLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
+        langLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
+        llmLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
 
         // ── Get API Key link ──
         let linkButton = NSButton(title: "Get API Key at console.groq.com", target: nil, action: nil)
