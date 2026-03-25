@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+canvas { position: fixed; top: 0; left: 0; background: transparent !important; }
+</style>
+</head><body>
+<canvas id="c"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+// Digital Rain v2 — Parallax depth + character cycling
+// 3-layer parallax, Radiant-style char cycling & bright leads
+// Dynamic spread: quiet=edges, loud=full screen
+// Water line at very bottom (5px), 3 color modes
+// ═══════════════════════════════════════════════
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H, dpr;
+let audioLevel = 0, smoothAudio = 0;
+let active = false, fadeProgress = 0;
+let processing = false, smoothProcessing = 0;
+let errorFlash = 0, celebrationFlash = 0;
+let rafHandle = null;
+let lastTime = 0;
+let frozenEdgeBand = 0;
+let exitPhase = false;
+
+// Dynamic edge band
+let EDGE_MIN;
+
+// ── Color modes: emerald (default), ember (warm), blue (cold) ──
+const COLOR_MODES = {
+  emerald: {
+    head:     [220, 255, 220],
+    nearHead: [80, 230, 100],
+    body:     [30, 180, 60],
+    glow:     [100, 255, 140],
+    water:    [60, 180, 90],
+    ambient:  [0, 15, 5],
+    procShift: [140, 80, 220],  // processing: green → purple
+  },
+  ember: {
+    head:     [255, 245, 220],
+    nearHead: [240, 200, 140],
+    body:     [200, 149, 108],
+    glow:     [255, 220, 160],
+    water:    [200, 170, 130],
+    ambient:  [8, 4, 0],
+    procShift: [220, 100, 180],
+  },
+  blue: {
+    head:     [220, 235, 255],
+    nearHead: [120, 170, 240],
+    body:     [80, 130, 200],
+    glow:     [140, 190, 255],
+    water:    [100, 150, 210],
+    ambient:  [0, 4, 12],
+    procShift: [180, 80, 255],
+  }
+};
+
+let colorMode = 'emerald';
+let palette = COLOR_MODES[colorMode];
+// Smooth color transition targets
+let activeC = {};
+function resetActiveC() {
+  activeC = {
+    head: palette.head.slice(),
+    nearHead: palette.nearHead.slice(),
+    body: palette.body.slice(),
+    glow: palette.glow.slice(),
+    water: palette.water.slice(),
+    ambient: palette.ambient.slice(),
+    procShift: palette.procShift.slice(),
+  };
+}
+resetActiveC();
+
+function lerpC(cur, tgt, t) {
+  for (let i = 0; i < 3; i++) cur[i] += (tgt[i] - cur[i]) * t;
+}
+function updatePalette(dt) {
+  const t = Math.min(1, dt * 3);
+  lerpC(activeC.head, palette.head, t);
+  lerpC(activeC.nearHead, palette.nearHead, t);
+  lerpC(activeC.body, palette.body, t);
+  lerpC(activeC.glow, palette.glow, t);
+  lerpC(activeC.water, palette.water, t);
+  lerpC(activeC.ambient, palette.ambient, t);
+  lerpC(activeC.procShift, palette.procShift, t);
+}
+
+// ── Characters (Radiant set + our code symbols) ──
+const CHARS = 'ァアィイゥウェエォオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンヴ0123456789<>{}[]|/\\=+*&#@ΔΩΣΠψφ∞≡∇∂λ×÷√≈≠≤≥∫∂αβγθ';
+
+// ── 3 depth layers ──
+const LAYERS = [
+  { fontSize: 10, speedRange: [0.6, 1.5], baseBright: 0.45, maxBright: 0.7,  glowSize: 0,  weight: '300', trailLen: [8, 18] },
+  { fontSize: 15, speedRange: [1.2, 3.0], baseBright: 0.65, maxBright: 1.0,  glowSize: 8,  weight: '400', trailLen: [10, 24] },
+  { fontSize: 22, speedRange: [2.0, 5.0], baseBright: 0.85, maxBright: 1.0,  glowSize: 16, weight: '400', trailLen: [12, 28] },
+];
+
+let streams = [];
+let smoothEdgeBand = 0;
+
+// Water line: 5px from bottom
+let waterY;
+
+// Wave simulation
+let wavePoints = [];
+const WAVE_RES = 4;
+
+function resize() {
+  dpr = window.devicePixelRatio || 2;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  EDGE_MIN = Math.max(120, Math.min(H, W) * 0.17);
+  smoothEdgeBand = EDGE_MIN;
+  waterY = H - 5;
+  initStreams();
+  initWaves();
+}
+
+function initWaves() {
+  const count = Math.ceil(W / WAVE_RES) + 1;
+  wavePoints = [];
+  for (let i = 0; i < count; i++) wavePoints.push({ y: 0, vy: 0 });
+}
+
+function initStreams() {
+  streams = [];
+  if (!W || !H) return;
+
+  for (let li = 0; li < LAYERS.length; li++) {
+    const L = LAYERS[li];
+    const cols = Math.ceil(W / L.fontSize);
+    const density = li === 0 ? 0.7 : li === 1 ? 0.6 : 0.4;
+
+    for (let col = 0; col < cols; col++) {
+      const x = col * L.fontSize + (Math.random() - 0.5) * L.fontSize * 0.3;
+
+      if (Math.random() < density) {
+        streams.push(createStream(x, L, li, true));
+      }
+      // Extra density near edges
+      const dL = x, dR = W - x;
+      if (Math.min(dL, dR) < EDGE_MIN && Math.random() < density * 0.8) {
+        streams.push(createStream(x, L, li, true));
+      }
+    }
+  }
+}
+
+function createStream(x, layer, layerIdx, scatter) {
+  const [minL, maxL] = layer.trailLen;
+  const len = minL + Math.floor(Math.random() * (maxL - minL));
+  const [sMin, sMax] = layer.speedRange;
+  const speed = sMin + Math.random() * (sMax - sMin);
+
+  // Character cycling (from Radiant)
+  const chars = [];
+  for (let j = 0; j < len + 5; j++) {
+    chars.push({
+      char: CHARS[Math.floor(Math.random() * CHARS.length)],
+      cycleTimer: Math.random() * 3,
+      cycleRate: 0.5 + Math.random() * 2.5,
+    });
+  }
+
+  return {
+    x,
+    y: scatter ? -(Math.random() * H * 2.5) : -len * layer.fontSize - Math.random() * H * 0.8,
+    speed, baseSpeed: speed,
+    length: len,
+    chars,
+    layerIdx,
+    fontSize: layer.fontSize,
+    baseBright: layer.baseBright,
+    maxBright: layer.maxBright,
+    glowSize: layer.glowSize,
+    weight: layer.weight,
+    phase: Math.random() * Math.PI * 2,
+    brightnessVar: 0.7 + Math.random() * 0.6,
+    hitWater: false,
+  };
+}
+
+function resetStream(s) {
+  const L = LAYERS[s.layerIdx];
+  const [minL, maxL] = L.trailLen;
+  s.y = -s.length * s.fontSize - Math.random() * H * 0.8;
+  const [sMin, sMax] = L.speedRange;
+  s.speed = sMin + Math.random() * (sMax - sMin);
+  s.baseSpeed = s.speed;
+  s.length = minL + Math.floor(Math.random() * (maxL - minL));
+  s.chars = [];
+  for (let j = 0; j < s.length + 5; j++) {
+    s.chars.push({
+      char: CHARS[Math.floor(Math.random() * CHARS.length)],
+      cycleTimer: Math.random() * 3,
+      cycleRate: 0.5 + Math.random() * 2.5,
+    });
+  }
+  s.brightnessVar = 0.7 + Math.random() * 0.6;
+  s.hitWater = false;
+}
+
+// Dynamic edge alpha
+function edgeAlpha(x, y, edgeBand) {
+  const dL = x, dR = W - x, dT = y, dB = H - y;
+  const minDist = Math.min(dL, dR, dT, dB);
+  if (minDist >= edgeBand) return 0;
+  if (minDist < EDGE_MIN * 0.8) {
+    return 0.5 + 0.5 * (1.0 - minDist / (EDGE_MIN * 0.8));
+  }
+  const t = 1.0 - minDist / edgeBand;
+  return t * t * 0.6;
+}
+
+// Wave simulation
+function disturbWave(x, force) {
+  const idx = Math.floor(x / WAVE_RES);
+  for (let i = -3; i <= 3; i++) {
+    const wi = idx + i;
+    if (wi >= 0 && wi < wavePoints.length) {
+      wavePoints[wi].vy += force * (1 - Math.abs(i) / 4);
+    }
+  }
+}
+
+function updateWaves(dt) {
+  for (let i = 0; i < wavePoints.length; i++) {
+    const p = wavePoints[i];
+    p.vy += -0.03 * p.y;
+    p.vy *= 0.97;
+    p.y += p.vy;
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < wavePoints.length; i++) {
+      if (i > 0) wavePoints[i].vy += 0.25 * (wavePoints[i - 1].y - wavePoints[i].y);
+      if (i < wavePoints.length - 1) wavePoints[i].vy += 0.25 * (wavePoints[i + 1].y - wavePoints[i].y);
+    }
+  }
+}
+
+// ── Render ──
+
+function render(timestamp) {
+  rafHandle = requestAnimationFrame(render);
+
+  const dt = Math.min(0.05, (timestamp - lastTime) / 1000);
+  lastTime = timestamp;
+
+  // Smooth audio
+  const boostedAudio = Math.min(1, audioLevel * 2.5);
+  smoothAudio = boostedAudio > smoothAudio
+    ? smoothAudio * 0.15 + boostedAudio * 0.85
+    : smoothAudio * 0.92 + boostedAudio * 0.08;
+
+  // Dynamic edge band
+  const maxEdge = Math.min(W, H) * 0.7;
+  if (!exitPhase) {
+    const targetEdge = EDGE_MIN + smoothAudio * (maxEdge - EDGE_MIN);
+    smoothEdgeBand += (targetEdge - smoothEdgeBand) * dt * 4;
+  }
+
+  // Fade
+  if (active && fadeProgress < 1) fadeProgress = Math.min(1, fadeProgress + dt * 2.0);
+  if (exitPhase && fadeProgress > 0) fadeProgress = Math.max(0, fadeProgress - dt * 3.3);
+
+  // Processing smooth
+  const procTarget = processing ? 1 : (exitPhase ? smoothProcessing : 0);
+  smoothProcessing += (procTarget - smoothProcessing) * dt * 3;
+
+  // Flash decays
+  if (errorFlash > 0) errorFlash = Math.max(0, errorFlash - dt * 1.2);
+  if (celebrationFlash > 0) celebrationFlash = Math.max(0, celebrationFlash - dt * 1.8);
+
+  // Smooth color transitions
+  updatePalette(dt);
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (fadeProgress < 0.003) {
+    if (!active) {
+      exitPhase = false;
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
+    return;
+  }
+
+  // ── Dark backdrop + ambient glow ──
+  const backdropAlpha = 0.35 * fadeProgress * (0.5 + smoothAudio * 0.5);
+  const glowW = smoothEdgeBand * 0.8;
+
+  if (backdropAlpha > 0.005) {
+    const aR = Math.round(activeC.ambient[0]);
+    const aG = Math.round(activeC.ambient[1]);
+    const aB = Math.round(activeC.ambient[2]);
+    const ambStr = aR + ',' + aG + ',' + aB;
+
+    const bL = ctx.createLinearGradient(0, 0, glowW, 0);
+    bL.addColorStop(0, `rgba(${ambStr},${backdropAlpha})`);
+    bL.addColorStop(0.7, `rgba(${ambStr},${backdropAlpha * 0.3})`);
+    bL.addColorStop(1, `rgba(${ambStr},0)`);
+    ctx.fillStyle = bL;
+    ctx.fillRect(0, 0, glowW, H);
+
+    const bR = ctx.createLinearGradient(W, 0, W - glowW, 0);
+    bR.addColorStop(0, `rgba(${ambStr},${backdropAlpha})`);
+    bR.addColorStop(0.7, `rgba(${ambStr},${backdropAlpha * 0.3})`);
+    bR.addColorStop(1, `rgba(${ambStr},0)`);
+    ctx.fillStyle = bR;
+    ctx.fillRect(W - glowW, 0, glowW, H);
+
+    const bT = ctx.createLinearGradient(0, 0, 0, glowW * 0.5);
+    bT.addColorStop(0, `rgba(${ambStr},${backdropAlpha * 0.7})`);
+    bT.addColorStop(1, `rgba(${ambStr},0)`);
+    ctx.fillStyle = bT;
+    ctx.fillRect(0, 0, W, glowW * 0.5);
+
+    const bB = ctx.createLinearGradient(0, H, 0, H - glowW * 0.5);
+    bB.addColorStop(0, `rgba(${ambStr},${backdropAlpha * 0.7})`);
+    bB.addColorStop(1, `rgba(${ambStr},0)`);
+    ctx.fillStyle = bB;
+    ctx.fillRect(0, H - glowW * 0.5, W, glowW * 0.5);
+
+    // Ambient color glow (shifts during processing)
+    const ambAlpha = 0.06 * fadeProgress * (0.5 + smoothAudio * 0.5);
+    const pR = Math.floor(activeC.ambient[0] + smoothProcessing * (activeC.procShift[0] - activeC.ambient[0]) * 0.3);
+    const pG = Math.floor(activeC.ambient[1] + smoothProcessing * (activeC.procShift[1] - activeC.ambient[1]) * 0.3);
+    const pB = Math.floor(activeC.ambient[2] + smoothProcessing * (activeC.procShift[2] - activeC.ambient[2]) * 0.3);
+    const pStr = pR + ',' + pG + ',' + pB;
+
+    const gL = ctx.createLinearGradient(0, 0, glowW * 0.5, 0);
+    gL.addColorStop(0, `rgba(${pStr},${ambAlpha})`);
+    gL.addColorStop(1, `rgba(${pStr},0)`);
+    ctx.fillStyle = gL;
+    ctx.fillRect(0, 0, glowW * 0.5, H);
+
+    const gR = ctx.createLinearGradient(W, 0, W - glowW * 0.5, 0);
+    gR.addColorStop(0, `rgba(${pStr},${ambAlpha})`);
+    gR.addColorStop(1, `rgba(${pStr},0)`);
+    ctx.fillStyle = gR;
+    ctx.fillRect(W - glowW * 0.5, 0, glowW * 0.5, H);
+  }
+
+  // Speed
+  const speedMult = exitPhase ? 0 : (0.5 + smoothAudio * 2.5);
+  const brightMult = 0.85 + smoothAudio * 1.2;
+  const procSlowdown = 1.0 - smoothProcessing * 0.85;
+  const time = timestamp / 1000;
+
+  ctx.textBaseline = 'top';
+
+  // Update waves
+  updateWaves(dt);
+
+  // ── Render streams by layer (back to front) ──
+  for (let li = 0; li < LAYERS.length; li++) {
+    const L = LAYERS[li];
+    ctx.font = `${L.weight} ${L.fontSize}px "Menlo", "Monaco", monospace`;
+
+    for (let i = 0; i < streams.length; i++) {
+      const s = streams[i];
+      if (s.layerIdx !== li) continue;
+
+      // Update position
+      s.y += s.speed * speedMult * procSlowdown * dt * 60;
+
+      // Character cycling (from Radiant — chars change over time)
+      for (let j = 0; j < s.chars.length; j++) {
+        s.chars[j].cycleTimer -= dt;
+        if (s.chars[j].cycleTimer <= 0) {
+          s.chars[j].char = CHARS[Math.floor(Math.random() * CHARS.length)];
+          s.chars[j].cycleTimer = s.chars[j].cycleRate;
+        }
+      }
+
+      // Water hit → disturb wave
+      if (!s.hitWater && s.y >= waterY) {
+        s.hitWater = true;
+        disturbWave(s.x + s.fontSize * 0.5, -0.8 - Math.random() * 1.2);
+      }
+
+      // Reset off-screen (below water)
+      if (s.y - s.length * s.fontSize > waterY + 10) resetStream(s);
+
+      for (let j = 0; j < s.length; j++) {
+        const charY = s.y - (s.length - 1 - j) * s.fontSize;
+        // j=0 is top (tail), j=length-1 is bottom (head)
+        if (charY < -s.fontSize || charY > waterY) continue;
+
+        // Edge mask
+        const useBand = exitPhase ? frozenEdgeBand : smoothEdgeBand;
+        const eMask = edgeAlpha(s.x + s.fontSize * 0.5, charY + s.fontSize * 0.5, useBand);
+        if (eMask < 0.008) continue;
+
+        const charIndex = j % s.chars.length;
+        const headDist = 1.0 - j / (s.length - 1); // 0 at head, 1 at tail
+        const isHead = j === s.length - 1;
+        const isNearHead = j >= s.length - 2;
+
+        // ── Brightness: head is brightest (Radiant-style), exponential tail ──
+        let posBright;
+        if (isHead) {
+          posBright = 1.0;
+        } else if (j === s.length - 2) {
+          posBright = 0.85;
+        } else if (j >= s.length - 4) {
+          posBright = 0.65;
+        } else {
+          posBright = Math.pow(j / s.length, 1.8) * 0.5;
+        }
+
+        // Fade near water
+        const distToWater = waterY - charY;
+        if (distToWater < s.fontSize * 3) {
+          posBright *= Math.max(0, distToWater / (s.fontSize * 3));
+        }
+
+        // ── Color from palette ──
+        let r, g, b;
+        if (isHead) {
+          r = activeC.head[0]; g = activeC.head[1]; b = activeC.head[2];
+        } else if (isNearHead) {
+          r = activeC.nearHead[0]; g = activeC.nearHead[1]; b = activeC.nearHead[2];
+        } else {
+          r = activeC.body[0]; g = activeC.body[1]; b = activeC.body[2];
+        }
+
+        // Processing shift
+        if (smoothProcessing > 0.01) {
+          const p = smoothProcessing;
+          r = Math.min(255, r + (activeC.procShift[0] - r) * p * 0.5);
+          g = Math.min(255, g * (1 - p * 0.3) + activeC.procShift[1] * p * 0.3);
+          b = Math.min(255, b + (activeC.procShift[2] - b) * p * 0.6);
+        }
+
+        // Error flash: red
+        if (errorFlash > 0) {
+          const ef = errorFlash * errorFlash;
+          r = Math.min(255, r + (255 - r) * ef);
+          g *= (1 - ef * 0.85);
+          b *= (1 - ef * 0.9);
+        }
+
+        // Celebration flash: white burst
+        if (celebrationFlash > 0) {
+          const cf = celebrationFlash;
+          r = Math.min(255, r + (255 - r) * cf * 0.6);
+          g = Math.min(255, g + (255 - g) * cf);
+          b = Math.min(255, b + (255 - b) * cf * 0.5);
+        }
+
+        // Layer brightness
+        const layerBright = s.baseBright + (s.maxBright - s.baseBright) * smoothAudio;
+
+        let alpha = posBright * layerBright * brightMult * eMask * fadeProgress * s.brightnessVar;
+        alpha = Math.min(1, Math.max(0, alpha));
+        if (alpha < 0.01) continue;
+
+        // Glow for head/near-head
+        if (isNearHead && s.glowSize > 0 && alpha > 0.15) {
+          const glowA = alpha * (isHead ? 0.7 : 0.3);
+          ctx.shadowColor = `rgba(${Math.round(Math.min(255, activeC.glow[0]))},${Math.round(activeC.glow[1])},${Math.round(Math.min(255, activeC.glow[2]))},${glowA.toFixed(3)})`;
+          ctx.shadowBlur = s.glowSize * (0.8 + smoothAudio * 1.2);
+        }
+
+        ctx.fillStyle = `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${alpha.toFixed(3)})`;
+        ctx.fillText(s.chars[charIndex].char, s.x, charY);
+
+        // Double-pass for near-layer heads
+        if (isHead && s.layerIdx === 2 && alpha > 0.25) {
+          ctx.fillText(s.chars[charIndex].char, s.x, charY);
+        }
+
+        if (isNearHead && s.glowSize > 0) {
+          ctx.shadowBlur = 0;
+          ctx.shadowColor = 'transparent';
+        }
+      }
+    }
+  }
+
+  // ── Water line at bottom (5px from edge) — always visible when active ──
+  if (fadeProgress > 0.05) {
+    const wR = Math.round(activeC.water[0]);
+    const wG = Math.round(activeC.water[1]);
+    const wB = Math.round(activeC.water[2]);
+
+    // Wave line — visible even when quiet (base alpha 0.2), brighter with audio
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += WAVE_RES) {
+      const idx = Math.floor(x / WAVE_RES);
+      const waveOff = idx < wavePoints.length ? wavePoints[idx].y : 0;
+      const ambient = Math.sin(x * 0.012 + time * 0.8) * 1.0
+                    + Math.sin(x * 0.025 + time * 0.5) * 0.6
+                    + Math.sin(x * 0.007 + time * 0.3) * 1.5;
+      const py = waterY + waveOff + ambient;
+      if (x === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+    }
+    const wAlpha = fadeProgress * (0.2 + smoothAudio * 0.4);
+    ctx.strokeStyle = `rgba(${wR},${wG},${wB},${wAlpha.toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Glow above and below the wave line
+    const glowH = 12 + smoothAudio * 8;
+    const surfGlow = ctx.createLinearGradient(0, waterY - glowH, 0, waterY + glowH);
+    surfGlow.addColorStop(0, `rgba(${wR},${wG},${wB},0)`);
+    surfGlow.addColorStop(0.35, `rgba(${wR},${wG},${wB},${(0.06 * fadeProgress).toFixed(3)})`);
+    surfGlow.addColorStop(0.5, `rgba(${wR},${wG},${wB},${(0.1 * fadeProgress * (0.5 + smoothAudio * 0.5)).toFixed(3)})`);
+    surfGlow.addColorStop(0.65, `rgba(${wR},${wG},${wB},${(0.06 * fadeProgress).toFixed(3)})`);
+    surfGlow.addColorStop(1, `rgba(${wR},${wG},${wB},0)`);
+    ctx.fillStyle = surfGlow;
+    ctx.fillRect(0, waterY - glowH, W, glowH * 2);
+
+    // Dark water below the line (creates the "ocean floor" feeling)
+    if (waterY < H - 1) {
+      const oceanGrad = ctx.createLinearGradient(0, waterY, 0, H);
+      oceanGrad.addColorStop(0, `rgba(${Math.round(activeC.ambient[0])},${Math.round(activeC.ambient[1])},${Math.round(activeC.ambient[2])},${(0.3 * fadeProgress).toFixed(3)})`);
+      oceanGrad.addColorStop(1, `rgba(${Math.round(activeC.ambient[0])},${Math.round(activeC.ambient[1])},${Math.round(activeC.ambient[2])},${(0.5 * fadeProgress).toFixed(3)})`);
+      ctx.fillStyle = oceanGrad;
+      ctx.fillRect(0, waterY, W, H - waterY);
+    }
+  }
+
+  // ── Scanline CRT effect ──
+  if (fadeProgress > 0.1) {
+    const scanA = 0.04 * fadeProgress;
+    ctx.fillStyle = `rgba(0,0,0,${scanA})`;
+    for (let y = 0; y < H; y += 2) {
+      ctx.fillRect(0, y, W, 1);
+    }
+  }
+
+  // ── Edge border glow line ──
+  if (fadeProgress > 0.2 && (smoothAudio > 0.03 || exitPhase)) {
+    const lineA = 0.12 * fadeProgress * Math.min(1, smoothAudio * 2 + (exitPhase ? 0.5 : 0));
+    let lineR = activeC.body[0], lineG = activeC.body[1], lineB = activeC.body[2];
+    if (smoothProcessing > 0.01) {
+      lineR += (activeC.procShift[0] - lineR) * smoothProcessing;
+      lineG += (activeC.procShift[1] - lineG) * smoothProcessing;
+      lineB += (activeC.procShift[2] - lineB) * smoothProcessing;
+    }
+    ctx.strokeStyle = `rgba(${Math.round(lineR)},${Math.round(lineG)},${Math.round(lineB)},${lineA.toFixed(3)})`;
+    ctx.lineWidth = 0.5;
+    ctx.shadowColor = `rgba(${Math.round(lineR)},${Math.round(lineG)},${Math.round(lineB)},${(lineA * 0.4).toFixed(3)})`;
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(0, H);
+    ctx.moveTo(W, 0); ctx.lineTo(W, H);
+    ctx.moveTo(0, 0); ctx.lineTo(W, 0);
+    ctx.moveTo(0, H); ctx.lineTo(W, H);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+  }
+}
+
+function ensureRaf() {
+  if (rafHandle === null) { lastTime = performance.now(); render(lastTime); }
+}
+
+// ── Public API (compatible with dictation-service Overlay.swift) ──
+
+window.setAudioLevel = (v) => { audioLevel = v; };
+
+window.setActive = (on) => {
+  active = on;
+  if (!on) {
+    audioLevel = 0;
+    exitPhase = true;
+    frozenEdgeBand = smoothEdgeBand;
+    ensureRaf();
+  } else {
+    exitPhase = false;
+    if (streams.length === 0) initStreams();
+    ensureRaf();
+  }
+};
+
+window.setProcessing = (on) => {
+  processing = on;
+  if (on) {
+    ensureRaf();
+  } else {
+    exitPhase = true;
+    frozenEdgeBand = smoothEdgeBand;
+    audioLevel = 0;
+    ensureRaf();
+  }
+};
+
+window.setError = (on) => {
+  if (on) { errorFlash = 1.0; ensureRaf(); }
+};
+
+window.setCelebration = () => {
+  if (exitPhase) return;
+  celebrationFlash = 1.0;
+  for (let i = 0; i < streams.length; i++) {
+    streams[i].speed = streams[i].baseSpeed * 4;
+  }
+  ensureRaf();
+  setTimeout(() => {
+    for (let i = 0; i < streams.length; i++) {
+      streams[i].speed = streams[i].baseSpeed;
+    }
+  }, 500);
+};
+
+// Color mode switching
+window.setColorMode = (mode) => {
+  if (COLOR_MODES[mode]) {
+    colorMode = mode;
+    palette = COLOR_MODES[mode];
+  }
+};
+
+// ── Init ──
+resize();
+window.addEventListener('resize', resize);
+</script>
+</body></html>

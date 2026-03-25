@@ -19,6 +19,11 @@ func transcribeWithGroq(filePath: String, apiKey: String, language: String, comp
         log("❌ Cannot read audio file"); completion(nil, .audioFileError); return
     }
 
+    // Skip files too short for Whisper (WAV header=44B, need at least ~0.1s of audio)
+    if fileData.count < 1600 {
+        log("⚠️ Audio too short (\(fileData.count)B), skipping"); completion(nil, .noSpeechDetected); return
+    }
+
     let url = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!
     var request = URLRequest(url: url)
     request.httpMethod = "POST"

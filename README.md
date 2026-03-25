@@ -12,7 +12,7 @@
 
 - **Under 1 second** — Groq Whisper transcription, faster than you can reach for the keyboard
 - **Works everywhere** — auto-pastes into whatever app you're using. Slack, VS Code, Notes, anything
-- **Beautiful overlay** — voice-reactive animation on your screen edges. 15 themes (Matrix, Chrome, Aurora, and more)
+- **Beautiful overlay** — voice-reactive animation on your screen edges. 16 themes including Digital Rain 2 with 3-layer parallax depth
 - **Set your own hotkey** — backtick by default, change to any key combo in Preferences
 - **Smart auto-stop** — detects when you stop speaking and transcribes automatically
 - **Free forever** — open-source, MIT license, free Groq API
@@ -53,7 +53,7 @@ That's it. No window to switch to. No app to open. Just voice → text, wherever
 | **Any language** | English, Russian, Spanish, Chinese, Japanese, 50+ languages |
 | **Custom hotkey** | Set any key combo in Preferences (default: backtick) |
 | **Voice auto-stop** | Detects silence and stops recording automatically (opt-in) |
-| **5 plasma themes** | Violet Flame, Aurora, Nebula, Solar, Minimal |
+| **16 overlay themes** | Digital Rain 2 (default), Violet Flame, Aurora, Chrome, and 12 more |
 | **Error feedback** | Notifications for network issues, API errors, mic problems |
 | **Multi-display** | Overlay appears on the screen where your cursor is |
 | **Accessibility** | Respects Reduce Motion, VoiceOver announcements |
@@ -67,10 +67,21 @@ Switch themes from the menu bar icon.
 
 | Theme | Vibe |
 |-------|------|
-| **Violet Flame** | Deep purple plasma, default |
+| **Digital Rain 2** | 3-layer parallax Matrix rain with water line, 3 color modes (emerald/ember/blue) — **default** |
+| **Digital Rain** | Classic Matrix rain, edge-reactive |
+| **Violet Flame** | Deep purple plasma |
 | **Aurora** | Green-teal northern lights |
 | **Nebula** | Blue-pink cosmic dust |
 | **Solar** | Warm amber and gold |
+| **Liquid Chrome** | Metallic mercury flow |
+| **Bioluminescence** | Deep-sea glow |
+| **Circuit** | PCB trace patterns |
+| **Crystal Frost** | Ice crystal formations |
+| **HUD** | Sci-fi heads-up display |
+| **Ink Bleed** | Watercolor ink spread |
+| **Pulse Rings** | Concentric audio rings |
+| **Sound Terrain** | Audio-reactive landscape |
+| **Waveform** | Classic audio waveform |
 | **Minimal** | Subtle white pulse, distraction-free |
 
 Want to create your own? See [Creating Themes](docs/creating-themes.md).
@@ -84,6 +95,7 @@ Config file: `~/.config/ember/config.env`
 ```env
 GROQ_API_KEY=gsk_your_key_here
 DICTATION_LANGUAGE=auto
+THEME=digital-rain-2
 LLM_CORRECTION=never
 VAD_AUTO_STOP=false
 ```
@@ -92,6 +104,7 @@ VAD_AUTO_STOP=false
 |--------|--------|---------|------|
 | `GROQ_API_KEY` | `gsk_...` | — | Your free Groq API key |
 | `DICTATION_LANGUAGE` | `auto`, `en`, `ru`, `es`, etc. | `auto` | Language for transcription |
+| `THEME` | theme name | `digital-rain-2` | Overlay theme (see Themes section) |
 | `LLM_CORRECTION` | `never`, `auto`, `always` | `never` | Grammar correction via LLM (adds ~1s) |
 | `VAD_AUTO_STOP` | `true`, `false` | `false` | Auto-stop recording on silence |
 
