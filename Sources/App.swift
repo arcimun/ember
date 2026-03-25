@@ -1,98 +1,21 @@
 import Cocoa
-import Carbon.HIToolbox
 import Sparkle
 import AVFoundation
+import KeyboardShortcuts
 
 // ═══════════════════════════════════════════════════════════════════
-//  Ember v1.0.0 — Voice-to-text for macOS
-//  ` record → Groq Whisper STT → Groq LLM fix → auto-paste
+//  Ember v1.5 — Voice-to-text for macOS
+//  ` record → Groq Whisper STT → optional LLM fix → auto-paste
 // ═══════════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════════════════════
-// Carbon Hotkey — works WITHOUT Accessibility permission!
-// ═══════════════════════════════════════════════════════════════════
-
-var tildeHotkeyRef: EventHotKeyRef?
-var escapeHotkeyRef: EventHotKeyRef?
+// ─── KeyboardShortcuts Names ──────────────────────────────────────
+extension KeyboardShortcuts.Name {
+    static let toggleRecording = Self("toggleRecording", default: .init(.backtick))
+    static let cancelRecording = Self("cancelRecording", default: .init(.escape))
+}
 
 // Forward reference — set by AppDelegate on launch
 weak var appDelegateRef: AppDelegate?
-
-func carbonHotkeyHandler(nextHandler: EventHandlerCallRef?, event: EventRef?, userData: UnsafeMutableRawPointer?) -> OSStatus {
-    var hotkeyID = EventHotKeyID()
-    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-                      nil, MemoryLayout<EventHotKeyID>.size, nil, &hotkeyID)
-
-    DispatchQueue.main.async {
-        guard let del = appDelegateRef else { return }
-        switch hotkeyID.id {
-        case 1: // Tilde
-            if del.recorder.isRecording { del.recorder.stopRecording() }
-            else if !del.recorder.isStopping { del.recorder.startRecording() }
-        case 2: // Escape (only during recording)
-            if del.recorder.isRecording { del.recorder.cancelRecording() }
-        default: break
-        }
-    }
-
-    return noErr
-}
-
-func setupCarbonHotkeys() -> Bool {
-    // Install Carbon event handler
-    var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-
-    var handlerRef: EventHandlerRef?
-    let status = InstallEventHandler(
-        GetApplicationEventTarget(),
-        carbonHotkeyHandler,
-        1, &eventType, nil, &handlerRef
-    )
-
-    guard status == noErr else {
-        log("❌ Failed to install Carbon event handler: \(status)")
-        return false
-    }
-
-    // Register Tilde (keycode 50, no modifiers)
-    let tildeID = EventHotKeyID(signature: OSType(0x44494354), id: 1) // "EMBR" + 1
-    let tildeStatus = RegisterEventHotKey(
-        UInt32(kVK_ANSI_Grave), 0, tildeID,
-        GetApplicationEventTarget(), 0, &tildeHotkeyRef
-    )
-
-    if tildeStatus != noErr {
-        log("⚠️ Failed to register tilde hotkey: \(tildeStatus)")
-        // Try NSEvent as fallback
-        setupNSEventFallback()
-        return true
-    }
-
-    // Register Escape (keycode 53, no modifiers)
-    let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2) // "EMBR" + 2
-    RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
-
-    log("✅ Carbon hotkeys registered (tilde + escape)")
-    return true
-}
-
-func setupNSEventFallback() {
-    log("⚠️ Using NSEvent fallback for hotkeys")
-    NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-        if event.keyCode == 50 && !event.isARepeat { // tilde
-            DispatchQueue.main.async {
-                guard let del = appDelegateRef else { return }
-                if del.recorder.isRecording { del.recorder.stopRecording() }
-                else if !del.recorder.isStopping { del.recorder.startRecording() }
-            }
-        } else if event.keyCode == 53 && !event.isARepeat { // escape
-            DispatchQueue.main.async {
-                guard let del = appDelegateRef else { return }
-                if del.recorder.isRecording { del.recorder.cancelRecording() }
-            }
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // App Delegate
@@ -110,6 +33,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     // G1: Recording timer
     var recordingTimer: Timer?
     var recordingStartTime: Date?
+    // US-002: Timing display timer
+    var timingTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("🎤 Ember starting...")
@@ -177,10 +102,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
         overlayWindow = PlasmaOverlayWindow()
 
-        // Carbon hotkeys — no Accessibility needed!
-        if !setupCarbonHotkeys() {
-            setupNSEventFallback()
+        // KeyboardShortcuts — global hotkeys
+        KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
+            guard let self = self else { return }
+            if self.recorder.isRecording { self.recorder.stopRecording() }
+            else if !self.recorder.isStopping { self.recorder.startRecording() }
         }
+        KeyboardShortcuts.onKeyDown(for: .cancelRecording) { [weak self] in
+            guard let self = self else { return }
+            if self.recorder.isRecording { self.recorder.cancelRecording() }
+        }
+        log("✅ KeyboardShortcuts registered")
     }
 
     // ─── Microphone Access ────────────────────────────────────────
@@ -315,7 +247,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 280),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 340),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -362,8 +294,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         langLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         langPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        // ── LLM Correction ──
+        let llmLabel = NSTextField(labelWithString: "LLM Correction:")
+        llmLabel.font = .systemFont(ofSize: 13, weight: .medium)
+
+        let llmPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let llmOptions: [(LLMCorrectionMode, String)] = [
+            (.never, "Never (fastest)"),
+            (.auto, "Auto (long text only)"),
+            (.always, "Always"),
+        ]
+        for (mode, label) in llmOptions {
+            llmPopup.addItem(withTitle: label)
+            llmPopup.lastItem?.representedObject = mode.rawValue
+        }
+        if let idx = llmOptions.firstIndex(where: { $0.0 == config.llmCorrection }) {
+            llmPopup.selectItem(at: idx)
+        }
+        llmPopup.translatesAutoresizingMaskIntoConstraints = false
+
+        let llmRow = NSStackView(views: [llmLabel, llmPopup])
+        llmRow.orientation = .horizontal
+        llmRow.spacing = 10
+        llmRow.alignment = .centerY
+        llmLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        llmPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
         // ── Align labels ──
         keyLabel.widthAnchor.constraint(equalTo: langLabel.widthAnchor).isActive = true
+        keyLabel.widthAnchor.constraint(equalTo: llmLabel.widthAnchor).isActive = true
 
         // ── Get API Key link ──
         let linkButton = NSButton(title: "Get API Key at console.groq.com", target: nil, action: nil)
@@ -396,7 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [keyRow, langRow, linkButton, spacer, buttonRow])
+        let stack = NSStackView(views: [keyRow, langRow, llmRow, linkButton, spacer, buttonRow])
         stack.orientation = .vertical
         stack.spacing = 16
         stack.alignment = .leading
@@ -411,6 +370,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
             keyRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
             langRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
             langRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
+            llmRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
+            llmRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
             buttonRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
         ])
 
@@ -423,6 +384,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         self.preferencesWindow = window
         self._prefsKeyField = keyField
         self._prefsLangPopup = langPopup
+        self._prefsLLMPopup = llmPopup
 
         saveButton.target = self
         saveButton.action = #selector(preferencesSave)
@@ -434,19 +396,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     // Stored references for preferences fields (weak not needed — window holds them)
     private var _prefsKeyField: NSSecureTextField?
     private var _prefsLangPopup: NSPopUpButton?
+    private var _prefsLLMPopup: NSPopUpButton?
 
     @objc private func preferencesSave() {
         guard let keyField = _prefsKeyField, let langPopup = _prefsLangPopup else { return }
         let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let langCode = (langPopup.selectedItem?.representedObject as? String) ?? "auto"
+        let llmRaw = (_prefsLLMPopup?.selectedItem?.representedObject as? String) ?? "never"
+        let llmMode = LLMCorrectionMode(rawValue: llmRaw) ?? .never
 
-        Config.save(groqKey: key, language: langCode)
+        Config.save(groqKey: key, language: langCode, llmCorrection: llmMode)
         config = Config.load()
 
         preferencesWindow?.close()
         preferencesWindow = nil
         _prefsKeyField = nil
         _prefsLangPopup = nil
+        _prefsLLMPopup = nil
     }
 
     @objc private func preferencesCancel() {
@@ -454,11 +420,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         preferencesWindow = nil
         _prefsKeyField = nil
         _prefsLangPopup = nil
+        _prefsLLMPopup = nil
     }
 
     @objc private func openGroqConsole() {
         if let url = URL(string: "https://console.groq.com/keys") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // ─── Timing Display (US-002) ──────────────────────────────────
+    func showTimingBriefly(_ totalTime: Double) {
+        timingTimer?.invalidate()
+        let label = String(format: "⚡ %.1fs", totalTime)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.statusItem.button?.title = " \(label)"
+            self.timingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+                self?.statusItem.button?.title = ""
+            }
         }
     }
 
@@ -479,9 +459,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         overlayWindow?.webView.evaluateJavaScript("window.setProcessing(true)", completionHandler: nil)
     }
 
-    func recorderDidFinishProcessing(text: String) {
+    func recorderDidFinishProcessing(text: String, sttTime: Double, llmTime: Double) {
         setProcessingState(false)
         overlayWindow?.webView.evaluateJavaScript("window.setProcessing(false)", completionHandler: nil)
+
+        // US-002: Show timing in menu bar briefly
+        let totalTime = sttTime + llmTime
+        showTimingBriefly(totalTime)
 
         guard !text.isEmpty else {
             overlayWindow?.hide()

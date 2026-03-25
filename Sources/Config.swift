@@ -25,11 +25,18 @@ func log(_ msg: String) {
 }
 
 // ─── Config ──────────────────────────────────────────────────────
+enum LLMCorrectionMode: String {
+    case auto = "auto"
+    case always = "always"
+    case never = "never"
+}
+
 struct Config {
     var groqKey: String = ""
     var language: String = "auto"
     var theme: String = "violet-flame"
     var endDelay: Double = 0.8
+    var llmCorrection: LLMCorrectionMode = .never
 
     static func load() -> Config {
         var cfg = Config()
@@ -48,6 +55,7 @@ struct Config {
                 if k == "GROQ_API_KEY" && cfg.groqKey.isEmpty { cfg.groqKey = v }
                 if k == "DICTATION_LANGUAGE" { cfg.language = v }
                 if k == "THEME" { cfg.theme = v }
+                if k == "LLM_CORRECTION" { cfg.llmCorrection = LLMCorrectionMode(rawValue: v) ?? .never }
             }
         }
         return cfg
@@ -77,9 +85,12 @@ struct Config {
         try? lines.joined(separator: "\n").write(toFile: configPath, atomically: true, encoding: .utf8)
     }
 
-    static func save(groqKey: String, language: String) {
+    static func save(groqKey: String, language: String, llmCorrection: LLMCorrectionMode? = nil) {
         saveField("GROQ_API_KEY", value: groqKey)
         saveField("DICTATION_LANGUAGE", value: language)
+        if let llm = llmCorrection {
+            saveField("LLM_CORRECTION", value: llm.rawValue)
+        }
         log("✅ Config saved to \(configPath)")
     }
 }

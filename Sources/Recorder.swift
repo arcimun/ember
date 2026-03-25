@@ -60,7 +60,7 @@ enum EmberError: Error {
 protocol RecorderDelegate: AnyObject {
     func recorderDidStartRecording()
     func recorderDidStopRecording()
-    func recorderDidFinishProcessing(text: String)
+    func recorderDidFinishProcessing(text: String, sttTime: Double, llmTime: Double)
     func recorderDidCancel()
     func recorderDidUpdateAudioLevel(_ level: Float)
     func recorderDidStartProcessing()
@@ -231,7 +231,7 @@ class Recorder {
             log("⚠️ No audio file after conversion")
             DispatchQueue.main.async {
                 self.delegate?.recorderDidEncounterError(.audioConversionFailed)
-                self.delegate?.recorderDidFinishProcessing(text: "")
+                self.delegate?.recorderDidFinishProcessing(text: "", sttTime: 0, llmTime: 0)
             }
             isStopping = false; return
         }
@@ -248,7 +248,7 @@ class Recorder {
                 log("⚠️ STT error: \(sttError.userMessage)")
                 DispatchQueue.main.async {
                     self.delegate?.recorderDidEncounterError(sttError)
-                    self.delegate?.recorderDidFinishProcessing(text: "")
+                    self.delegate?.recorderDidFinishProcessing(text: "", sttTime: 0, llmTime: 0)
                 }
                 try? FileManager.default.removeItem(atPath: filePath)
                 self.isStopping = false
@@ -259,7 +259,7 @@ class Recorder {
                 log("⚠️ No speech detected")
                 DispatchQueue.main.async {
                     self.delegate?.recorderDidEncounterError(.noSpeechDetected)
-                    self.delegate?.recorderDidFinishProcessing(text: "")
+                    self.delegate?.recorderDidFinishProcessing(text: "", sttTime: 0, llmTime: 0)
                 }
                 try? FileManager.default.removeItem(atPath: filePath)
                 self.isStopping = false
@@ -271,20 +271,54 @@ class Recorder {
             self.currentText = rawText
             log("📝 Raw: \"\(rawText.prefix(100))\"")
 
-            // LLM post-processing
-            postProcessText(rawText, apiKey: apiKey) { [weak self] correctedText in
-                guard let self = self else { return }
-                self.currentText = correctedText
+            let sttEnd = Date()
+
+            // Determine whether to run LLM correction
+            let wordCount = rawText.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.count
+            let shouldUseLLM: Bool
+            switch config.llmCorrection {
+            case .always:
+                shouldUseLLM = true
+            case .never:
+                shouldUseLLM = false
+            case .auto:
+                shouldUseLLM = wordCount >= 20
+            }
+
+            if shouldUseLLM {
+                postProcessText(rawText, apiKey: apiKey) { [weak self] correctedText in
+                    guard let self = self else { return }
+                    self.currentText = correctedText
+
+                    let llmDuration = Date().timeIntervalSince(sttEnd)
+                    let sttDuration = sttEnd.timeIntervalSince(startTime ?? sttEnd)
+                    let totalDuration = sttDuration + llmDuration
+                    log(String(format: "⚡ %.1fs STT + %.1fs LLM = %.1fs total", sttDuration, llmDuration, totalDuration))
+
+                    DispatchQueue.main.async {
+                        self.delegate?.recorderDidFinishProcessing(text: correctedText, sttTime: sttDuration, llmTime: llmDuration)
+                    }
+
+                    let duration = startTime.map { Date().timeIntervalSince($0) } ?? 0
+                    saveHistory(raw: rawText, corrected: correctedText, language: detectedLang, duration: duration)
+                    try? FileManager.default.removeItem(atPath: filePath)
+                    self.isStopping = false
+                    log("✅ Done: \"\(correctedText.prefix(100))\"")
+                }
+            } else {
+                let sttDuration = sttEnd.timeIntervalSince(startTime ?? sttEnd)
+                log(String(format: "⚡ %.1fs STT + 0.0s LLM = %.1fs total", sttDuration, sttDuration))
+                self.currentText = rawText
 
                 DispatchQueue.main.async {
-                    self.delegate?.recorderDidFinishProcessing(text: correctedText)
+                    self.delegate?.recorderDidFinishProcessing(text: rawText, sttTime: sttDuration, llmTime: 0)
                 }
 
                 let duration = startTime.map { Date().timeIntervalSince($0) } ?? 0
-                saveHistory(raw: rawText, corrected: correctedText, language: detectedLang, duration: duration)
+                saveHistory(raw: rawText, corrected: rawText, language: detectedLang, duration: duration)
                 try? FileManager.default.removeItem(atPath: filePath)
                 self.isStopping = false
-                log("✅ Done: \"\(correctedText.prefix(100))\"")
+                log("✅ Done (no LLM): \"\(rawText.prefix(100))\"")
             }
         }
     }
