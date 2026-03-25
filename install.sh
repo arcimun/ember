@@ -18,11 +18,13 @@ if [ -d "Resources/themes" ]; then
     cp -R Resources/themes "$APP/Contents/Resources/themes"
 fi
 
-# Copy Sparkle framework
-if [ -d ".build/release/Sparkle.framework" ]; then
-    mkdir -p "$APP/Contents/Frameworks"
-    cp -R .build/release/Sparkle.framework "$APP/Contents/Frameworks/"
-fi
+# Copy all frameworks from build output (generic — handles Sparkle, KeyboardShortcuts, WhisperKit, and future additions)
+FRAMEWORKS_DIR="$APP/Contents/Frameworks"
+mkdir -p "$FRAMEWORKS_DIR"
+find .build/release -maxdepth 1 -name "*.framework" | while read fw; do
+    echo "  Copying framework: $(basename "$fw")"
+    cp -R "$fw" "$FRAMEWORKS_DIR/"
+done
 
 VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]' || echo "1.0.0")
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"

@@ -30,10 +30,11 @@ jobs:
           cp .build/release/Ember Ember.app/Contents/MacOS/
           cp -R Resources/themes Ember.app/Contents/Resources/themes || true
           cp Resources/Ember.icns Ember.app/Contents/Resources/ || true
-          if [ -d ".build/release/Sparkle.framework" ]; then
-            mkdir -p Ember.app/Contents/Frameworks
-            cp -R .build/release/Sparkle.framework Ember.app/Contents/Frameworks/
-          fi
+          # Copy all frameworks generically (handles Sparkle, KeyboardShortcuts, WhisperKit, and future additions)
+          mkdir -p Ember.app/Contents/Frameworks
+          find .build/release -maxdepth 1 -name "*.framework" | while read fw; do
+            cp -R "$fw" Ember.app/Contents/Frameworks/
+          done
           sed "s/__VERSION__/${APP_VERSION}/g" Resources/Info.plist > Ember.app/Contents/Info.plist
 
       - name: Fix framework paths and sign

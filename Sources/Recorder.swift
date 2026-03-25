@@ -74,6 +74,13 @@ class Recorder {
     var recordingStartTime: Date?
     var audioLevel: Float = 0
 
+    // VAD (Voice Activity Detection) properties
+    private let silenceThreshold: Float = 0.008
+    private var silentFrameCount: Int = 0
+    private var speechFrameCount: Int = 0
+    private let minSpeechFrames: Int = 15
+    private let silenceFramesThreshold: Int = 15
+
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var audioFilePath = ""
@@ -81,9 +88,19 @@ class Recorder {
 
     weak var delegate: RecorderDelegate?
 
+    private func autoTriggerTranscription() {
+        guard isRecording else { return }
+        log("🔇 VAD: silence detected — auto-stopping")
+        DispatchQueue.main.async { [weak self] in
+            self?.stopRecording()
+        }
+    }
+
     func startRecording() {
         guard !isRecording && !isStopping else { return }
         isRecording = true; currentText = ""; recordingStartTime = Date()
+        // Reset VAD counters
+        silentFrameCount = 0; speechFrameCount = 0
 
         audioFilePath = NSTemporaryDirectory() + "ember_\(Int(Date().timeIntervalSince1970)).wav"
         log("🎙️ Recording to \(audioFilePath.components(separatedBy: "/").last ?? "")")
@@ -119,6 +136,21 @@ class Recorder {
                 self.audioLevel = self.audioLevel * 0.6 + rms * 0.4
                 DispatchQueue.main.async {
                     self.delegate?.recorderDidUpdateAudioLevel(self.audioLevel)
+                }
+
+                // VAD: track speech and silence frames
+                if config.vadAutoStop {
+                    if rms >= self.silenceThreshold {
+                        self.speechFrameCount += 1
+                        self.silentFrameCount = 0
+                    } else {
+                        if self.speechFrameCount >= self.minSpeechFrames {
+                            self.silentFrameCount += 1
+                            if self.silentFrameCount > self.silenceFramesThreshold {
+                                self.autoTriggerTranscription()
+                            }
+                        }
+                    }
                 }
             }
 

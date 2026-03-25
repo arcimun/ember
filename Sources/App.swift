@@ -247,7 +247,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 390),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -320,6 +320,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         llmLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         llmPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
+        // ── VAD Auto-Stop ──
+        let vadCheckbox = NSButton(checkboxWithTitle: "Auto-stop on silence (experimental)", target: nil, action: nil)
+        vadCheckbox.state = config.vadAutoStop ? .on : .off
+        vadCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         // ── Align labels ──
         keyLabel.widthAnchor.constraint(equalTo: langLabel.widthAnchor).isActive = true
         keyLabel.widthAnchor.constraint(equalTo: llmLabel.widthAnchor).isActive = true
@@ -355,7 +360,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [keyRow, langRow, llmRow, linkButton, spacer, buttonRow])
+        let stack = NSStackView(views: [keyRow, langRow, llmRow, vadCheckbox, linkButton, spacer, buttonRow])
         stack.orientation = .vertical
         stack.spacing = 16
         stack.alignment = .leading
@@ -385,6 +390,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         self._prefsKeyField = keyField
         self._prefsLangPopup = langPopup
         self._prefsLLMPopup = llmPopup
+        self._prefsVADCheckbox = vadCheckbox
 
         saveButton.target = self
         saveButton.action = #selector(preferencesSave)
@@ -397,6 +403,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     private var _prefsKeyField: NSSecureTextField?
     private var _prefsLangPopup: NSPopUpButton?
     private var _prefsLLMPopup: NSPopUpButton?
+    private var _prefsVADCheckbox: NSButton?
 
     @objc private func preferencesSave() {
         guard let keyField = _prefsKeyField, let langPopup = _prefsLangPopup else { return }
@@ -404,8 +411,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         let langCode = (langPopup.selectedItem?.representedObject as? String) ?? "auto"
         let llmRaw = (_prefsLLMPopup?.selectedItem?.representedObject as? String) ?? "never"
         let llmMode = LLMCorrectionMode(rawValue: llmRaw) ?? .never
+        let vadEnabled = _prefsVADCheckbox?.state == .on
 
-        Config.save(groqKey: key, language: langCode, llmCorrection: llmMode)
+        Config.save(groqKey: key, language: langCode, llmCorrection: llmMode, vadAutoStop: vadEnabled)
         config = Config.load()
 
         preferencesWindow?.close()
@@ -413,6 +421,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         _prefsKeyField = nil
         _prefsLangPopup = nil
         _prefsLLMPopup = nil
+        _prefsVADCheckbox = nil
     }
 
     @objc private func preferencesCancel() {
@@ -421,6 +430,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         _prefsKeyField = nil
         _prefsLangPopup = nil
         _prefsLLMPopup = nil
+        _prefsVADCheckbox = nil
     }
 
     @objc private func openGroqConsole() {

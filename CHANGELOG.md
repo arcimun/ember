@@ -2,6 +2,20 @@
 
 All notable changes to Ember will be documented in this file.
 
+## [1.6.0] - 2026-03-25
+
+### Added
+- **Voice Activity Detection (VAD)** — auto-stops recording after ~0.5s of silence once speech is detected. Opt-in via Preferences checkbox "Auto-stop on silence (experimental)" or `VAD_AUTO_STOP=true` in config.env.
+- **VAD config key** — `VAD_AUTO_STOP=true|false` (default: false) in `~/.config/ember/config.env`
+- **VAD Preferences checkbox** — "Auto-stop on silence (experimental)" in Preferences window
+
+### Fixed
+- **Yellow flash on overlay show** — WebView is now hidden until theme HTML finishes loading, preventing flash of default white/yellow background
+- Preferences window height increased to accommodate new VAD checkbox
+
+### Blocked (infrastructure)
+- **WhisperKit on-device STT** (US-001/002/003) — blocked by swift-collections incompatibility with current Swift toolchain. WhisperKit 0.17.0 depends on swift-collections 1.4.1 which fails to compile against the `Span._unsafeElements` API change. Will retry in next release when WhisperKit updates its dependencies.
+
 ## [1.4.0] - 2026-03-25
 
 ### Added — Reliability (PRD 1)

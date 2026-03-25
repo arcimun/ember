@@ -37,6 +37,7 @@ struct Config {
     var theme: String = "violet-flame"
     var endDelay: Double = 0.8
     var llmCorrection: LLMCorrectionMode = .never
+    var vadAutoStop: Bool = false
 
     static func load() -> Config {
         var cfg = Config()
@@ -56,6 +57,7 @@ struct Config {
                 if k == "DICTATION_LANGUAGE" { cfg.language = v }
                 if k == "THEME" { cfg.theme = v }
                 if k == "LLM_CORRECTION" { cfg.llmCorrection = LLMCorrectionMode(rawValue: v) ?? .never }
+                if k == "VAD_AUTO_STOP" { cfg.vadAutoStop = (v == "true" || v == "1") }
             }
         }
         return cfg
@@ -85,11 +87,14 @@ struct Config {
         try? lines.joined(separator: "\n").write(toFile: configPath, atomically: true, encoding: .utf8)
     }
 
-    static func save(groqKey: String, language: String, llmCorrection: LLMCorrectionMode? = nil) {
+    static func save(groqKey: String, language: String, llmCorrection: LLMCorrectionMode? = nil, vadAutoStop: Bool? = nil) {
         saveField("GROQ_API_KEY", value: groqKey)
         saveField("DICTATION_LANGUAGE", value: language)
         if let llm = llmCorrection {
             saveField("LLM_CORRECTION", value: llm.rawValue)
+        }
+        if let vad = vadAutoStop {
+            saveField("VAD_AUTO_STOP", value: vad ? "true" : "false")
         }
         log("✅ Config saved to \(configPath)")
     }
