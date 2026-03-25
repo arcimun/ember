@@ -42,8 +42,6 @@ func transcribeWithGroq(filePath: String, apiKey: String, language: String, comp
     }
     // Response format — verbose_json to get detected language
     body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\nverbose_json\r\n".data(using: .utf8)!)
-    // initial_prompt: hint for better punctuation and capitalization
-    body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nPunctuate and capitalize correctly.\r\n".data(using: .utf8)!)
     body.append("--\(boundary)--\r\n".data(using: .utf8)!)
     request.httpBody = body
 

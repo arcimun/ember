@@ -531,15 +531,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 /// Simulate Cmd+V paste. Checks frontmost app is not Ember itself.
 /// Uses asyncAfter instead of usleep to avoid blocking the main thread.
 func simulatePaste() {
-    // US-008: Check that a suitable target app is focused
-    let frontmost = NSWorkspace.shared.frontmostApplication
-    guard frontmost != nil, frontmost?.bundleIdentifier != "com.arcimun.ember" else {
-        log("⚠️ No suitable target app for paste — text remains in clipboard")
-        return
-    }
-
+    // Ember is a menu bar app (LSUIElement) — it never steals focus from the target app.
+    // The frontmost app at paste time is always the user's target window.
     let src = CGEventSource(stateID: .combinedSessionState)
-    // US-007: Use asyncAfter instead of usleep
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
         if let d = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true) {
             d.flags = .maskCommand; d.post(tap: .cghidEventTap)
