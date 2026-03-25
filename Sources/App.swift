@@ -1,21 +1,84 @@
 import Cocoa
+import Carbon.HIToolbox
 import Sparkle
 import AVFoundation
-import KeyboardShortcuts
 
 // ═══════════════════════════════════════════════════════════════════
-//  Ember v1.5 — Voice-to-text for macOS
+//  Ember v1.6 — Voice-to-text for macOS
 //  ` record → Groq Whisper STT → optional LLM fix → auto-paste
 // ═══════════════════════════════════════════════════════════════════
 
-// ─── KeyboardShortcuts Names ──────────────────────────────────────
-extension KeyboardShortcuts.Name {
-    static let toggleRecording = Self("toggleRecording", default: .init(.backtick))
-    static let cancelRecording = Self("cancelRecording", default: .init(.escape))
-}
+// ═══════════════════════════════════════════════════════════════════
+// Carbon Hotkey — works WITHOUT Accessibility permission!
+// ═══════════════════════════════════════════════════════════════════
+
+var tildeHotkeyRef: EventHotKeyRef?
+var escapeHotkeyRef: EventHotKeyRef?
 
 // Forward reference — set by AppDelegate on launch
 weak var appDelegateRef: AppDelegate?
+
+func carbonHotkeyHandler(nextHandler: EventHandlerCallRef?, event: EventRef?, userData: UnsafeMutableRawPointer?) -> OSStatus {
+    var hotkeyID = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                      nil, MemoryLayout<EventHotKeyID>.size, nil, &hotkeyID)
+
+    DispatchQueue.main.async {
+        guard let del = appDelegateRef else { return }
+        switch hotkeyID.id {
+        case 1: // Tilde
+            if del.recorder.isRecording { del.recorder.stopRecording() }
+            else if !del.recorder.isStopping { del.recorder.startRecording() }
+        case 2: // Escape (only during recording)
+            if del.recorder.isRecording { del.recorder.cancelRecording() }
+        default: break
+        }
+    }
+
+    return noErr
+}
+
+func setupCarbonHotkeys() -> Bool {
+    var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+    var handlerRef: EventHandlerRef?
+    let status = InstallEventHandler(GetApplicationEventTarget(), carbonHotkeyHandler, 1, &eventType, nil, &handlerRef)
+    guard status == noErr else {
+        log("❌ Failed to install Carbon event handler: \(status)")
+        return false
+    }
+
+    let tildeID = EventHotKeyID(signature: OSType(0x44494354), id: 1)
+    let tildeStatus = RegisterEventHotKey(UInt32(kVK_ANSI_Grave), 0, tildeID, GetApplicationEventTarget(), 0, &tildeHotkeyRef)
+    if tildeStatus != noErr {
+        log("⚠️ Failed to register tilde hotkey: \(tildeStatus)")
+        setupNSEventFallback()
+        return true
+    }
+
+    let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2)
+    RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
+
+    log("✅ Carbon hotkeys registered (tilde + escape)")
+    return true
+}
+
+func setupNSEventFallback() {
+    log("⚠️ Using NSEvent fallback for hotkeys")
+    NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+        if event.keyCode == 50 && !event.isARepeat {
+            DispatchQueue.main.async {
+                guard let del = appDelegateRef else { return }
+                if del.recorder.isRecording { del.recorder.stopRecording() }
+                else if !del.recorder.isStopping { del.recorder.startRecording() }
+            }
+        } else if event.keyCode == 53 && !event.isARepeat {
+            DispatchQueue.main.async {
+                guard let del = appDelegateRef else { return }
+                if del.recorder.isRecording { del.recorder.cancelRecording() }
+            }
+        }
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // App Delegate
@@ -102,17 +165,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
         overlayWindow = PlasmaOverlayWindow()
 
-        // KeyboardShortcuts — global hotkeys
-        KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
-            guard let self = self else { return }
-            if self.recorder.isRecording { self.recorder.stopRecording() }
-            else if !self.recorder.isStopping { self.recorder.startRecording() }
+        // Carbon hotkeys — works without Accessibility permission
+        if !setupCarbonHotkeys() {
+            setupNSEventFallback()
         }
-        KeyboardShortcuts.onKeyDown(for: .cancelRecording) { [weak self] in
-            guard let self = self else { return }
-            if self.recorder.isRecording { self.recorder.cancelRecording() }
-        }
-        log("✅ KeyboardShortcuts registered")
     }
 
     // ─── Microphone Access ────────────────────────────────────────
