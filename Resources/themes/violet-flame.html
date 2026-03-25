@@ -174,12 +174,14 @@ const uFade = gl.getUniformLocation(prog, 'uFade');
 const uProc = gl.getUniformLocation(prog, 'uProcessing');
 const uRes = gl.getUniformLocation(prog, 'uRes');
 let smoothProcessing = 0;
+// D2: RAF handle — null when loop is stopped to save battery
+let rafHandle = null;
 
 gl.enable(gl.BLEND);
 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
 function render() {
-  requestAnimationFrame(render);
+  rafHandle = requestAnimationFrame(render);
 
   // Smooth audio
   smoothAudio = audioLevel > smoothAudio
@@ -204,14 +206,27 @@ function render() {
     gl.uniform1f(uProc, smoothProcessing);
     gl.uniform2f(uRes, canvas.width, canvas.height);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } else if (!active) {
+    // D2: Nothing to render and overlay hidden — stop RAF loop to save battery
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
   }
 }
 render();
 
+// D2: Helper to restart RAF loop if it was stopped
+function ensureRafRunning() {
+  if (rafHandle === null) render();
+}
+
 // API
 window.setAudioLevel = (v) => { audioLevel = v; };
-window.setActive = (on) => { active = on; if (!on) smoothAudio = 0; };
-window.setProcessing = (on) => { processing = on; };
+window.setActive = (on) => {
+  active = on;
+  if (!on) { smoothAudio = 0; }
+  else { ensureRafRunning(); }  // D2: restart loop on activation
+};
+window.setProcessing = (on) => { processing = on; if (on) ensureRafRunning(); };
 window.setError = (on) => {
   if (on) {
     // Flash red: temporarily override color via a CSS overlay
@@ -221,6 +236,25 @@ window.setError = (on) => {
     document.body.appendChild(overlay);
     setTimeout(() => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 800);
   }
+};
+// G3: Celebratory bright pulse on successful transcription
+window.setCelebration = () => {
+  ensureRafRunning();
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;border:4px solid rgba(180,120,255,0.0);box-shadow:inset 0 0 80px rgba(160,80,255,0.0);transition:none;';
+  document.body.appendChild(el);
+  // Quick burst: fade in bright white-violet, then out
+  requestAnimationFrame(() => {
+    el.style.transition = 'border-color 0.08s ease-out, box-shadow 0.08s ease-out';
+    el.style.borderColor = 'rgba(220,180,255,0.9)';
+    el.style.boxShadow = 'inset 0 0 100px rgba(180,100,255,0.55), 0 0 40px rgba(180,100,255,0.3)';
+    setTimeout(() => {
+      el.style.transition = 'border-color 0.45s ease-in, box-shadow 0.45s ease-in';
+      el.style.borderColor = 'rgba(180,120,255,0.0)';
+      el.style.boxShadow = 'inset 0 0 80px rgba(160,80,255,0.0)';
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 500);
+    }, 120);
+  });
 };
 </script>
 </body></html>

@@ -155,20 +155,80 @@ class Recorder {
         delegate?.recorderDidStopRecording()
         delegate?.recorderDidStartProcessing()
 
-        // Convert native format (48kHz float) → 16kHz mono Int16 WAV for Groq
+        // D1: Convert native CAF → 16kHz mono Int16 WAV using AVAudioConverter (in-process, no subprocess)
         let nativePath = audioFilePath + ".native.caf"
         if FileManager.default.fileExists(atPath: nativePath) {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-            task.arguments = [nativePath, audioFilePath, "-f", "WAVE", "-d", "LEI16@16000", "-c", "1"]
-            try? task.run()
-            task.waitUntilExit()
-            try? FileManager.default.removeItem(atPath: nativePath)
+            do {
+                let sourceFile = try AVAudioFile(forReading: URL(fileURLWithPath: nativePath))
+                let sourceFormat = sourceFile.processingFormat
+
+                // Target: 16kHz mono Int16 (PCM) — Groq Whisper requirement
+                guard let targetFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatInt16,
+                    sampleRate: 16000,
+                    channels: 1,
+                    interleaved: true
+                ) else {
+                    throw EmberError.audioConversionFailed
+                }
+
+                guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+                    throw EmberError.audioConversionFailed
+                }
+
+                // Write output WAV via AVAudioFile
+                let outputFile = try AVAudioFile(
+                    forWriting: URL(fileURLWithPath: audioFilePath),
+                    settings: targetFormat.settings,
+                    commonFormat: .pcmFormatInt16,
+                    interleaved: true
+                )
+
+                let inputFrameCapacity: AVAudioFrameCount = 8192
+                let outputFrameCapacity = AVAudioFrameCount(
+                    Double(inputFrameCapacity) * (targetFormat.sampleRate / sourceFormat.sampleRate) + 1
+                )
+
+                guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: inputFrameCapacity),
+                      let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrameCapacity) else {
+                    throw EmberError.audioConversionFailed
+                }
+
+                var reachedEnd = false
+                while !reachedEnd {
+                    var error: NSError?
+                    let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+                        do {
+                            try sourceFile.read(into: inputBuffer)
+                            outStatus.pointee = inputBuffer.frameLength > 0 ? .haveData : .endOfStream
+                            if inputBuffer.frameLength == 0 { reachedEnd = true }
+                        } catch {
+                            outStatus.pointee = .endOfStream
+                            reachedEnd = true
+                        }
+                        return inputBuffer
+                    }
+                    if let error = error {
+                        log("⚠️ AVAudioConverter error: \(error)")
+                        break
+                    }
+                    if outputBuffer.frameLength > 0 {
+                        try outputFile.write(from: outputBuffer)
+                    }
+                    if status == .endOfStream { reachedEnd = true }
+                }
+
+                try? FileManager.default.removeItem(atPath: nativePath)
+                log("✅ Audio converted (AVAudioConverter): \(audioFilePath.components(separatedBy: "/").last ?? "")")
+            } catch {
+                log("❌ AVAudioConverter failed: \(error)")
+                try? FileManager.default.removeItem(atPath: nativePath)
+            }
         }
 
         // Send WAV to Groq Whisper API
         guard FileManager.default.fileExists(atPath: audioFilePath) else {
-            log("⚠️ No audio file after afconvert")
+            log("⚠️ No audio file after conversion")
             DispatchQueue.main.async {
                 self.delegate?.recorderDidEncounterError(.audioConversionFailed)
                 self.delegate?.recorderDidFinishProcessing(text: "")

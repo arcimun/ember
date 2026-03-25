@@ -12,10 +12,17 @@ class PlasmaOverlayWindow: NSWindow {
     var audioLevel: Float = 0  // Set externally by recorder
     var isShowing = false
 
-    init() {
-        guard let screen = NSScreen.main else {
-            super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false); return
+    // D8: Find the screen that contains the current mouse cursor
+    static func screenWithCursor() -> NSScreen {
+        let mouseLocation = NSEvent.mouseLocation
+        for screen in NSScreen.screens {
+            if screen.frame.contains(mouseLocation) { return screen }
         }
+        return NSScreen.main ?? NSScreen.screens.first!
+    }
+
+    init() {
+        let screen = PlasmaOverlayWindow.screenWithCursor()
         super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         level = .screenSaver; isOpaque = false; backgroundColor = .clear
         ignoresMouseEvents = true; hasShadow = false
@@ -46,7 +53,8 @@ class PlasmaOverlayWindow: NSWindow {
     }
 
     func adaptToScreen() {
-        guard let screen = NSScreen.main else { return }
+        // D8: Use screen with cursor for multi-display support
+        let screen = PlasmaOverlayWindow.screenWithCursor()
         setFrame(screen.frame, display: true)
         webView.frame = NSRect(origin: .zero, size: screen.frame.size)
         log("🖥️ Overlay adapted to screen: \(Int(screen.frame.width))x\(Int(screen.frame.height))")

@@ -107,6 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     var preferencesWindow: NSWindow?
     var themeMenu: NSMenu!
     let historyController = HistoryWindowController()
+    // G1: Recording timer
+    var recordingTimer: Timer?
+    var recordingStartTime: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("🎤 Ember starting...")
@@ -125,6 +128,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
             AXIsProcessTrustedWithOptions(opts)
         } else {
             log("✅ Accessibility granted")
+        }
+
+        // F1: Check reduceMotion accessibility setting — use minimal theme if enabled
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            log("♿ reduceMotion detected — switching to minimal theme")
+            config.theme = "minimal"
+            Config.saveField("THEME", value: "minimal")
         }
 
         // First-run: prompt for API key if missing
@@ -202,12 +212,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
     func setRecordingState(_ recording: Bool) {
         DispatchQueue.main.async { [self] in
-            if let button = statusItem.button {
-                if recording {
-                    button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording")
-                } else {
-                    button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
+            if recording {
+                // G1: Start elapsed timer
+                recordingStartTime = Date()
+                recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                    guard let self = self, let start = self.recordingStartTime else { return }
+                    let elapsed = Int(Date().timeIntervalSince(start))
+                    let mm = elapsed / 60
+                    let ss = elapsed % 60
+                    let label = String(format: "%d:%02d", mm, ss)
+                    self.statusItem.button?.title = " \(label)"
+                    self.statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording")
                 }
+                statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording")
+                statusItem.button?.title = " 0:00"
+            } else {
+                // G1: Stop timer and clear title
+                recordingTimer?.invalidate()
+                recordingTimer = nil
+                recordingStartTime = nil
+                statusItem.button?.title = ""
+                statusItem.button?.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
             }
             toggleMenuItem.title = recording ? "Stop Recording (`)" : "Start Recording (`)"
         }
@@ -457,9 +482,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     func recorderDidFinishProcessing(text: String) {
         setProcessingState(false)
         overlayWindow?.webView.evaluateJavaScript("window.setProcessing(false)", completionHandler: nil)
-        overlayWindow?.hide()
 
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else {
+            overlayWindow?.hide()
+            return
+        }
+
+        // G3: Celebratory pulse before fade-out
+        overlayWindow?.webView.evaluateJavaScript("window.setCelebration()", completionHandler: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.overlayWindow?.hide()
+        }
 
         let pb = NSPasteboard.general; pb.clearContents()
         pb.setString(text, forType: .string)

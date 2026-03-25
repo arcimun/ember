@@ -5,9 +5,15 @@ import Cocoa
 let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/Ember.log")
 
+// D4: Cached DateFormatter — avoids allocation on every log() call
+private let _logDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    return f
+}()
+
 func log(_ msg: String) {
-    let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-    let line = "[\(f.string(from: Date()))] \(msg)\n"
+    let line = "[\(_logDateFormatter.string(from: Date()))] \(msg)\n"
     print(line, terminator: "")
     if let data = line.data(using: .utf8) {
         if FileManager.default.fileExists(atPath: logFile.path) {
@@ -81,19 +87,34 @@ struct Config {
 var config = Config.load()
 
 // ─── First-Run API Key Dialog ──────────────────────────────────
+// B4: Value proposition + B5: NSSecureTextField + B3: gsk_ validation + B6: Skip consequences
 func showApiKeyDialog() {
     let alert = NSAlert()
     alert.messageText = "Welcome to Ember"
-    alert.informativeText = "Enter your Groq API key to get started.\nGet a free key at console.groq.com"
+    // B4: Value proposition before asking for the key
+    alert.informativeText = "Press `, speak, and text appears automatically — in any app.\n\nEmber uses Groq for transcription (free tier available). Enter your API key to get started."
     alert.alertStyle = .informational
 
-    let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+    // B5: NSSecureTextField hides the key as it's typed
+    let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 52))
+
+    let inputField = NSSecureTextField(frame: NSRect(x: 0, y: 28, width: 320, height: 24))
     inputField.placeholderString = "gsk_..."
-    alert.accessoryView = inputField
+    container.addSubview(inputField)
+
+    // B3: Format hint
+    let hint = NSTextField(labelWithString: "Key must start with gsk_")
+    hint.frame = NSRect(x: 0, y: 0, width: 320, height: 20)
+    hint.font = .systemFont(ofSize: 11)
+    hint.textColor = .secondaryLabelColor
+    container.addSubview(hint)
+
+    alert.accessoryView = container
 
     alert.addButton(withTitle: "Save")
-    alert.addButton(withTitle: "Get API Key")
-    alert.addButton(withTitle: "Skip")
+    alert.addButton(withTitle: "Get Free Key")
+    // B6: Explain skip consequences
+    alert.addButton(withTitle: "Skip (transcription disabled)")
 
     let response = alert.runModal()
 
@@ -105,30 +126,24 @@ func showApiKeyDialog() {
             log("⚠️ Empty API key — skipped")
             return
         }
-        let configDir = NSString(string: "~/.config/ember").expandingTildeInPath
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        let configPath = (configDir as NSString).appendingPathComponent("config.env")
-        // Append or create config file
-        var contents = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
-        if contents.contains("GROQ_API_KEY=") {
-            // Replace existing key
-            let lines = contents.components(separatedBy: .newlines).map { line -> String in
-                if line.trimmingCharacters(in: .whitespaces).hasPrefix("GROQ_API_KEY=") {
-                    return "GROQ_API_KEY=\(key)"
-                }
-                return line
-            }
-            contents = lines.joined(separator: "\n")
-        } else {
-            if !contents.isEmpty && !contents.hasSuffix("\n") { contents += "\n" }
-            contents += "GROQ_API_KEY=\(key)\n"
+        // B3: Validate gsk_ prefix format
+        guard key.hasPrefix("gsk_") else {
+            log("⚠️ Invalid API key format (must start with gsk_)")
+            let errAlert = NSAlert()
+            errAlert.messageText = "Invalid API Key"
+            errAlert.informativeText = "Groq API keys start with \"gsk_\". Please check your key and try again."
+            errAlert.alertStyle = .warning
+            errAlert.addButton(withTitle: "OK")
+            errAlert.runModal()
+            DispatchQueue.main.async { showApiKeyDialog() }
+            return
         }
-        try? contents.write(toFile: configPath, atomically: true, encoding: .utf8)
+        Config.saveField("GROQ_API_KEY", value: key)
         config = Config.load()
-        log("✅ API key saved to \(configPath)")
+        log("✅ API key saved")
 
     case .alertSecondButtonReturn:
-        // Get API Key — open browser, then re-show dialog (async to avoid stack overflow)
+        // Get Free Key — open browser, then re-show dialog
         if let url = URL(string: "https://console.groq.com/keys") {
             NSWorkspace.shared.open(url)
         }
@@ -136,7 +151,7 @@ func showApiKeyDialog() {
 
     default:
         // Skip
-        log("⚠️ API key dialog skipped")
+        log("⚠️ API key dialog skipped — transcription disabled until key is set in Preferences")
     }
 }
 
