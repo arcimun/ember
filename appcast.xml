@@ -6,37 +6,16 @@
     <description>Ember voice-to-text updates</description>
     <language>en</language>
     <item>
-      <title>Version 1.1.0.2</title>
-      <sparkle:version>1.1.0.2</sparkle:version>
-      <sparkle:shortVersionString>1.1.0.2</sparkle:shortVersionString>
+      <title>Version 1.7.0.0</title>
+      <sparkle:version>1.7.0.0</sparkle:version>
+      <sparkle:shortVersionString>1.7.0.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <pubDate>Wed, 19 Mar 2026 00:00:00 -0700</pubDate>
-      <description><![CDATA[
-        <ul>
-          <li>Native Preferences window (Cmd+,)</li>
-          <li>Zero external dependencies — SoX replaced with AVAudioEngine</li>
-          <li>Modular architecture (5 Swift files)</li>
-          <li>Language selection in Preferences</li>
-        </ul>
-      ]]></description>
+      <pubDate>Wed, 25 Mar 2026 11:58:31 +0000</pubDate>
       <enclosure
-        url="https://github.com/arcimun/ember/releases/download/v1.1.0.2/Ember-1.1.0.2.dmg"
+        url="https://github.com/arcimun/ember/releases/download/v1.7.0.0/Ember-1.7.0.0.dmg"
         type="application/octet-stream"
-        sparkle:edSignature="SgeJ0e5cJZOoL3mZE1XUxd2nUuEZsOw2tsTNqiGU7AYveXvpj6yYyJxuaeLjEsc/Q4XLQ1Gm0DZ51Jc0hO78Dg=="
-        length="2909475"
-      />
-    </item>
-    <item>
-      <title>Version 1.0.0</title>
-      <sparkle:version>1.0.0</sparkle:version>
-      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <pubDate>Tue, 18 Mar 2026 19:30:00 -0700</pubDate>
-      <enclosure
-        url="https://github.com/arcimun/ember/releases/download/v1.0.0/Ember-1.0.0.dmg"
-        type="application/octet-stream"
-        sparkle:edSignature="ooJqePWMkp7zZ1USGBvRhKKljmWc4YV2g0sPfHgOUYiYZoOk3U+Fn/BorWOoUJEKedMNzoVBamEXbfO++XVEAA=="
-        length="1460055"
+        sparkle:edSignature="IJkOmCpDiXb27Kmjz2LuhXWMoVVlfGwO4veGvzXpezWN9IiawIT1tXlvMXuF1dXsxgyb/iJLUk/ndoz4XGaECQ=="
+        length="287470"
       />
     </item>
   </channel>
