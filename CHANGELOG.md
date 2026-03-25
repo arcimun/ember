@@ -2,19 +2,23 @@
 
 All notable changes to Ember will be documented in this file.
 
-## [1.3.0] - 2026-03-25
+## [1.4.0] - 2026-03-25
 
-### Added
+### Added — Reliability (PRD 1)
 - **Error handling system** — EmberError enum with 10 typed errors, delegate-based propagation
 - User-visible notifications for all 12 error paths (no more silent failures)
 - Overlay error flash (red) across all 5 themes
+- Microphone access check on launch with user guidance
+
+### Added — First Impressions (PRD 2)
 - Overlay celebration pulse on successful transcription across all 5 themes
 - Recording timer in menu bar (elapsed time display)
-- Microphone access check on launch with user guidance
 - Multi-display support (overlay follows cursor screen)
 - Reduce Motion accessibility (auto-switches to minimal theme)
 - API key validation (gsk_ prefix check) in first-run dialog
 - Value proposition text in onboarding dialog
+
+### Added — Launch (PRD 3)
 - Theme creation guide (docs/creating-themes.md)
 - CONTRIBUTING.md for community contributions
 - GitHub issue templates (bug, feature, theme submission)
