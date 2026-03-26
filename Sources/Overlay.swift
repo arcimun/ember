@@ -30,7 +30,9 @@ class PlasmaOverlayWindow: NSWindow, WKNavigationDelegate {
 
         // WKWebView with TRULY transparent background
         let webConfig = WKWebViewConfiguration()
+        #if DEBUG
         webConfig.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        #endif
         webView = WKWebView(frame: screen.frame, configuration: webConfig)
 
         // Multiple transparency methods for reliability
@@ -53,7 +55,7 @@ class PlasmaOverlayWindow: NSWindow, WKNavigationDelegate {
             self?.adaptToScreen()
         }
 
-        loadTheme(config.theme)
+        loadTheme(EmberConfig.shared.theme)
     }
 
     func adaptToScreen() {

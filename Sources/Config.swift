@@ -1,5 +1,6 @@
 import Foundation
 import Cocoa
+import Observation
 
 // ─── Logging ─────────────────────────────────────────────────────
 let logFile = FileManager.default.homeDirectoryForCurrentUser
@@ -31,16 +32,25 @@ enum LLMCorrectionMode: String {
     case never = "never"
 }
 
-struct Config {
+// Fix 0A: Config struct → @Observable class singleton
+@Observable
+class EmberConfig {
+    static let shared = EmberConfig()
+
     var groqKey: String = ""
     var language: String = "auto"
     var theme: String = "digital-rain-2"
     var endDelay: Double = 0.8
     var llmCorrection: LLMCorrectionMode = .never
     var vadAutoStop: Bool = false
+    var hotkeyKeyCode: UInt32 = 50      // kVK_ANSI_Grave (backtick/tilde)
+    var hotkeyModifiers: UInt32 = 0     // no modifiers by default
 
-    static func load() -> Config {
-        var cfg = Config()
+    private init() {
+        load()
+    }
+
+    func load() {
         for path in [
             NSString(string: "~/.config/ember/config.env").expandingTildeInPath,
             NSString(string: "~/.openclaw/.env").expandingTildeInPath,
@@ -53,14 +63,15 @@ struct Config {
                 guard parts.count == 2 else { continue }
                 let k = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 let v = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                if k == "GROQ_API_KEY" && cfg.groqKey.isEmpty { cfg.groqKey = v }
-                if k == "DICTATION_LANGUAGE" { cfg.language = v }
-                if k == "THEME" { cfg.theme = v }
-                if k == "LLM_CORRECTION" { cfg.llmCorrection = LLMCorrectionMode(rawValue: v) ?? .never }
-                if k == "VAD_AUTO_STOP" { cfg.vadAutoStop = (v == "true" || v == "1") }
+                if k == "GROQ_API_KEY" && groqKey.isEmpty { groqKey = v }
+                if k == "DICTATION_LANGUAGE" { language = v }
+                if k == "THEME" { theme = v }
+                if k == "LLM_CORRECTION" { llmCorrection = LLMCorrectionMode(rawValue: v) ?? .never }
+                if k == "VAD_AUTO_STOP" { vadAutoStop = (v == "true" || v == "1") }
+                if k == "HOTKEY_KEYCODE" { hotkeyKeyCode = UInt32(v) ?? 50 }
+                if k == "HOTKEY_MODIFIERS" { hotkeyModifiers = UInt32(v) ?? 0 }
             }
         }
-        return cfg
     }
 
     static let configPath: String = {
@@ -99,8 +110,6 @@ struct Config {
         log("✅ Config saved to \(configPath)")
     }
 }
-
-var config = Config.load()
 
 // ─── First-Run API Key Dialog ──────────────────────────────────
 // B4: Value proposition + B5: NSSecureTextField + B3: gsk_ validation + B6: Skip consequences
@@ -154,8 +163,8 @@ func showApiKeyDialog() {
             DispatchQueue.main.async { showApiKeyDialog() }
             return
         }
-        Config.saveField("GROQ_API_KEY", value: key)
-        config = Config.load()
+        EmberConfig.saveField("GROQ_API_KEY", value: key)
+        EmberConfig.shared.load()
         log("✅ API key saved")
 
     case .alertSecondButtonReturn:

@@ -2,9 +2,10 @@ import Cocoa
 import Carbon.HIToolbox
 import Sparkle
 import AVFoundation
+import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════
-//  Ember v1.6 — Voice-to-text for macOS
+//  Ember v2.0 — Voice-to-text for macOS
 //  ` record → Groq Whisper STT → optional LLM fix → auto-paste
 // ═══════════════════════════════════════════════════════════════════
 
@@ -47,10 +48,11 @@ func setupCarbonHotkeys() -> Bool {
         return false
     }
 
+    let cfg = EmberConfig.shared
     let tildeID = EventHotKeyID(signature: OSType(0x44494354), id: 1)
-    let tildeStatus = RegisterEventHotKey(UInt32(kVK_ANSI_Grave), 0, tildeID, GetApplicationEventTarget(), 0, &tildeHotkeyRef)
+    let tildeStatus = RegisterEventHotKey(cfg.hotkeyKeyCode, cfg.hotkeyModifiers, tildeID, GetApplicationEventTarget(), 0, &tildeHotkeyRef)
     if tildeStatus != noErr {
-        log("⚠️ Failed to register tilde hotkey: \(tildeStatus)")
+        log("⚠️ Failed to register hotkey (keyCode: \(cfg.hotkeyKeyCode), mods: \(cfg.hotkeyModifiers)): \(tildeStatus)")
         setupNSEventFallback()
         return true
     }
@@ -58,14 +60,33 @@ func setupCarbonHotkeys() -> Bool {
     let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2)
     RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
 
-    log("✅ Carbon hotkeys registered (tilde + escape)")
+    log("✅ Carbon hotkeys registered (keyCode: \(cfg.hotkeyKeyCode), mods: \(cfg.hotkeyModifiers))")
     return true
+}
+
+/// Re-register the recording hotkey at runtime (called from Settings when user changes hotkey)
+func reregisterRecordingHotkey() {
+    // Unregister old
+    if let ref = tildeHotkeyRef {
+        UnregisterEventHotKey(ref)
+        tildeHotkeyRef = nil
+    }
+    // Register new
+    let cfg = EmberConfig.shared
+    let hotkeyID = EventHotKeyID(signature: OSType(0x44494354), id: 1)
+    let status = RegisterEventHotKey(cfg.hotkeyKeyCode, cfg.hotkeyModifiers, hotkeyID, GetApplicationEventTarget(), 0, &tildeHotkeyRef)
+    if status != noErr {
+        log("⚠️ Failed to re-register hotkey: \(status)")
+    } else {
+        log("✅ Hotkey re-registered (keyCode: \(cfg.hotkeyKeyCode), mods: \(cfg.hotkeyModifiers))")
+    }
 }
 
 func setupNSEventFallback() {
     log("⚠️ Using NSEvent fallback for hotkeys")
     NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-        if event.keyCode == 50 && !event.isARepeat {
+        let cfg = EmberConfig.shared
+        if event.keyCode == cfg.hotkeyKeyCode && !event.isARepeat {
             DispatchQueue.main.async {
                 guard let del = appDelegateRef else { return }
                 if del.recorder.isRecording { del.recorder.stopRecording() }
@@ -92,7 +113,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     let recorder = Recorder()
     var preferencesWindow: NSWindow?
     var themeMenu: NSMenu!
-    let historyController = HistoryWindowController()
+    // History window uses HistoryWindowManager (singleton, prevents window leak — Eng 2.5)
+    let onboardingController = OnboardingWindowController()
     // G1: Recording timer
     var recordingTimer: Timer?
     var recordingStartTime: Date?
@@ -104,8 +126,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         appDelegateRef = self
         recorder.delegate = self
 
-        // Check microphone access
-        checkMicrophoneAccess()
+        // Fix 0F: Clean stale temp audio files older than 1 hour
+        cleanupTempFiles()
+
+        // Fix 0E: Serialize first-run dialogs — mic permission FIRST, then API key
+        checkMicrophoneAccessThenApiKey()
 
         // Check Accessibility (for CGEvent typing — hotkey works without it)
         if !AXIsProcessTrusted() {
@@ -121,47 +146,56 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         // F1: Check reduceMotion accessibility setting — use minimal theme if enabled
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             log("♿ reduceMotion detected — switching to minimal theme")
-            config.theme = "minimal"
-            Config.saveField("THEME", value: "minimal")
-        }
-
-        // First-run: prompt for API key if missing
-        if config.groqKey.isEmpty {
-            showApiKeyDialog()
+            EmberConfig.shared.theme = "minimal"
+            EmberConfig.saveField("THEME", value: "minimal")
         }
 
         // Sparkle auto-updater
         updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
-        // Menu bar
+        // Menu bar status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Ember")
         }
 
+        // Status item dropdown menu (quick actions)
         toggleMenuItem = NSMenuItem(title: "Start Recording (`)", action: #selector(toggleRecording), keyEquivalent: "")
         toggleMenuItem.target = self
-        let menu = NSMenu()
-        menu.addItem(toggleMenuItem)
-        menu.addItem(.separator())
-        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
-        prefsItem.target = self
-        menu.addItem(prefsItem)
-        menu.addItem(.separator())
+        let statusMenu = NSMenu()
+        statusMenu.addItem(toggleMenuItem)
+        statusMenu.addItem(.separator())
+
+        let prefsStatusItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
+        prefsStatusItem.target = self
+        statusMenu.addItem(prefsStatusItem)
+        statusMenu.addItem(.separator())
+
         // Theme submenu
         themeMenu = NSMenu(title: "Theme")
         buildThemeMenu()
         let themeItem = NSMenuItem(title: "Theme", action: nil, keyEquivalent: "")
         themeItem.submenu = themeMenu
-        menu.addItem(themeItem)
+        statusMenu.addItem(themeItem)
 
         let updateItem = NSMenuItem(title: "Check for Updates...", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         updateItem.target = updaterController
-        menu.addItem(updateItem)
-        let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: ""); hi.target = self; menu.addItem(hi)
-        menu.addItem(.separator())
-        let qi = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"); qi.target = self; menu.addItem(qi)
-        statusItem.menu = menu
+        statusMenu.addItem(updateItem)
+
+        let hi = NSMenuItem(title: "History...", action: #selector(openHistory), keyEquivalent: "")
+        hi.target = self
+        statusMenu.addItem(hi)
+
+        statusMenu.addItem(.separator())
+
+        let qi = NSMenuItem(title: "Quit Ember", action: #selector(quitApp), keyEquivalent: "q")
+        qi.target = self
+        statusMenu.addItem(qi)
+
+        statusItem.menu = statusMenu
+
+        // Phase 1: Native NSMenu (Ember, Edit, Window, Help)
+        setupMainMenu()
 
         overlayWindow = PlasmaOverlayWindow()
 
@@ -169,10 +203,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         if !setupCarbonHotkeys() {
             setupNSEventFallback()
         }
+
+        // Listen for theme changes from SwiftUI Preferences
+        NotificationCenter.default.addObserver(
+            forName: .emberThemeChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            if let themeName = notification.object as? String {
+                self?.overlayWindow?.loadTheme(themeName)
+                self?.buildThemeMenu()
+            }
+        }
+
+        // Show onboarding on first launch
+        if OnboardingWindowController.shouldShow() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.onboardingController.show()
+            }
+        }
     }
 
-    // ─── Microphone Access ────────────────────────────────────────
-    func checkMicrophoneAccess() {
+    // ─── Fix 0F: Temp File Cleanup ────────────────────────────────
+    private func cleanupTempFiles() {
+        let fm = FileManager.default
+        let tmpDir = "/tmp"
+        guard let files = try? fm.contentsOfDirectory(atPath: tmpDir) else { return }
+        let oneHourAgo = Date().addingTimeInterval(-3600)
+        var cleaned = 0
+        for file in files where file.hasPrefix("ember_") {
+            let path = (tmpDir as NSString).appendingPathComponent(file)
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let modDate = attrs[.modificationDate] as? Date,
+                  modDate < oneHourAgo else { continue }
+            try? fm.removeItem(atPath: path)
+            cleaned += 1
+        }
+        if cleaned > 0 { log("🧹 Cleaned \(cleaned) stale temp file(s)") }
+    }
+
+    // ─── Fix 0E: Serialized mic → API key dialogs ─────────────────
+    private func checkMicrophoneAccessThenApiKey() {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
         case .denied, .restricted:
@@ -180,8 +251,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
             DispatchQueue.main.async { [weak self] in
                 self?.recorderDidEncounterError(.microphoneAccessDenied)
             }
+            // Still check API key even if mic denied
+            checkApiKeyIfNeeded()
+
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 if granted {
                     log("✅ Microphone access granted")
                 } else {
@@ -190,12 +264,153 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
                         self?.recorderDidEncounterError(.microphoneAccessDenied)
                     }
                 }
+                // Fix 0E: Show API key dialog AFTER mic permission completes
+                DispatchQueue.main.async { [weak self] in
+                    self?.checkApiKeyIfNeeded()
+                }
             }
+
         case .authorized:
             log("✅ Microphone access authorized")
+            checkApiKeyIfNeeded()
+
         @unknown default:
-            break
+            checkApiKeyIfNeeded()
         }
+    }
+
+    private func checkApiKeyIfNeeded() {
+        if EmberConfig.shared.groqKey.isEmpty {
+            showApiKeyDialog()
+        }
+    }
+
+    // ─── Microphone Access (kept for error handling) ──────────────
+    func checkMicrophoneAccess() {
+        // This method is kept for compatibility with RecorderDelegate
+        // Actual first-run check is done via checkMicrophoneAccessThenApiKey()
+    }
+
+    // ─── Phase 1: Native NSMenu ───────────────────────────────────
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // ── Ember menu ──
+        let emberMenu = NSMenu(title: "Ember")
+
+        let aboutItem = NSMenuItem(title: "About Ember", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        emberMenu.addItem(aboutItem)
+
+        emberMenu.addItem(.separator())
+
+        let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        emberMenu.addItem(prefsItem)
+
+        emberMenu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Ember", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        emberMenu.addItem(quitItem)
+
+        let emberMenuBarItem = NSMenuItem()
+        emberMenuBarItem.submenu = emberMenu
+        mainMenu.addItem(emberMenuBarItem)
+
+        // ── Edit menu ──
+        let editMenu = NSMenu(title: "Edit")
+
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
+        let editMenuBarItem = NSMenuItem()
+        editMenuBarItem.submenu = editMenu
+        mainMenu.addItem(editMenuBarItem)
+
+        // ── Window menu ──
+        let windowMenu = NSMenu(title: "Window")
+
+        let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(minimizeItem)
+
+        let zoomItem = NSMenuItem(title: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(zoomItem)
+
+        windowMenu.addItem(.separator())
+
+        let bringAllItem = NSMenuItem(title: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowMenu.addItem(bringAllItem)
+
+        let windowMenuBarItem = NSMenuItem()
+        windowMenuBarItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuBarItem)
+        NSApp.windowsMenu = windowMenu
+
+        // ── Help menu ──
+        let helpMenu = NSMenu(title: "Help")
+
+        let helpItem = NSMenuItem(title: "Ember Help", action: #selector(openHelp), keyEquivalent: "?")
+        helpItem.target = self
+        helpMenu.addItem(helpItem)
+
+        let welcomeItem = NSMenuItem(title: "Show Welcome Guide", action: #selector(showWelcomeGuide), keyEquivalent: "")
+        welcomeItem.target = self
+        helpMenu.addItem(welcomeItem)
+
+        let helpMenuBarItem = NSMenuItem()
+        helpMenuBarItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuBarItem)
+
+        NSApp.mainMenu = mainMenu
+        NSApp.helpMenu = helpMenu
+    }
+
+    // ─── About Panel ──────────────────────────────────────────────
+    @objc func showAbout() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+
+        let creditsText = """
+        Ember v\(version) (build \(build))
+
+        Voice-to-text for macOS.
+        Press `, speak, text appears.
+
+        GitHub: github.com/arcimun/ember
+        License: MIT
+        """
+
+        let creditsAttr = NSAttributedString(
+            string: creditsText,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+        )
+
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Ember",
+            .applicationVersion: version,
+            .version: build,
+            .credits: creditsAttr
+        ])
+    }
+
+    @objc func openHelp() {
+        if let url = URL(string: "https://github.com/arcimun/ember") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func showWelcomeGuide() {
+        onboardingController.show()
     }
 
     func setRecordingState(_ recording: Bool) {
@@ -246,7 +461,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         }
     }
 
-    @objc func openHistory() { historyController.showWindow() }
+    @objc func openHistory() { HistoryWindowManager.shared.show() }
     @objc func quitApp() { if recorder.isRecording { recorder.stopRecording() }; NSApp.terminate(nil) }
 
     // ─── Theme Switching ──────────────────────────────────────────
@@ -258,15 +473,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
             let item = NSMenuItem(title: title, action: #selector(switchTheme(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = name
-            item.state = (name == config.theme) ? .on : .off
+            item.state = (name == EmberConfig.shared.theme) ? .on : .off
             themeMenu.addItem(item)
         }
     }
 
     @objc func switchTheme(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        config.theme = name
-        Config.saveField("THEME", value: name)
+        EmberConfig.shared.theme = name
+        EmberConfig.saveField("THEME", value: name)
         overlayWindow?.loadTheme(name)
         // Restore overlay state if currently active
         if overlayWindow?.isShowing == true {
@@ -280,221 +495,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
         for item in themeMenu.items { item.isEnabled = enabled }
     }
 
-    // ─── Preferences Window ───────────────────────────────────────
-
-    private static let languages: [(code: String, label: String)] = [
-        ("auto", "Auto-detect"),
-        ("ru", "Russian"),
-        ("en", "English"),
-        ("es", "Spanish"),
-        ("fr", "French"),
-        ("de", "German"),
-        ("zh", "Chinese"),
-        ("ja", "Japanese"),
-        ("ko", "Korean"),
-    ]
+    // ─── Preferences Window (SwiftUI) ────────────────────────────
 
     @objc func showPreferences() {
-        // If window already exists, just bring it forward
+        // Reuse existing window if open
         if let w = preferencesWindow, w.isVisible {
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 390),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
+        let settingsView = SettingsView()
+        let hostingController = NSHostingController(rootView: settingsView)
+
+        let window = NSWindow(contentViewController: hostingController)
         window.title = "Ember Preferences"
+        window.styleMask = [.titled, .closable]
+        window.setContentSize(NSSize(width: 550, height: 420))
         window.center()
         window.isReleasedWhenClosed = false
 
-        // ── API Key ──
-        let keyLabel = NSTextField(labelWithString: "API Key:")
-        keyLabel.font = .systemFont(ofSize: 13, weight: .medium)
-
-        let keyField = NSSecureTextField()
-        keyField.placeholderString = "gsk_..."
-        keyField.stringValue = config.groqKey
-        keyField.translatesAutoresizingMaskIntoConstraints = false
-
-        let keyRow = NSStackView(views: [keyLabel, keyField])
-        keyRow.orientation = .horizontal
-        keyRow.spacing = 10
-        keyRow.alignment = .centerY
-        keyLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        keyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // ── Language ──
-        let langLabel = NSTextField(labelWithString: "Language:")
-        langLabel.font = .systemFont(ofSize: 13, weight: .medium)
-
-        let langPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        for lang in Self.languages {
-            langPopup.addItem(withTitle: lang.label)
-            langPopup.lastItem?.representedObject = lang.code
-        }
-        // Select current language
-        if let idx = Self.languages.firstIndex(where: { $0.code == config.language }) {
-            langPopup.selectItem(at: idx)
-        }
-        langPopup.translatesAutoresizingMaskIntoConstraints = false
-
-        let langRow = NSStackView(views: [langLabel, langPopup])
-        langRow.orientation = .horizontal
-        langRow.spacing = 10
-        langRow.alignment = .centerY
-        langLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        langPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // ── LLM Correction ──
-        let llmLabel = NSTextField(labelWithString: "LLM Correction:")
-        llmLabel.font = .systemFont(ofSize: 13, weight: .medium)
-
-        let llmPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        let llmOptions: [(LLMCorrectionMode, String)] = [
-            (.never, "Never (fastest)"),
-            (.auto, "Auto (long text only)"),
-            (.always, "Always"),
-        ]
-        for (mode, label) in llmOptions {
-            llmPopup.addItem(withTitle: label)
-            llmPopup.lastItem?.representedObject = mode.rawValue
-        }
-        if let idx = llmOptions.firstIndex(where: { $0.0 == config.llmCorrection }) {
-            llmPopup.selectItem(at: idx)
-        }
-        llmPopup.translatesAutoresizingMaskIntoConstraints = false
-
-        let llmRow = NSStackView(views: [llmLabel, llmPopup])
-        llmRow.orientation = .horizontal
-        llmRow.spacing = 10
-        llmRow.alignment = .centerY
-        llmLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        llmPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // ── VAD Auto-Stop ──
-        let vadCheckbox = NSButton(checkboxWithTitle: "Auto-stop on silence (experimental)", target: nil, action: nil)
-        vadCheckbox.state = config.vadAutoStop ? .on : .off
-        vadCheckbox.translatesAutoresizingMaskIntoConstraints = false
-
-        // ── Align labels ──
-        let labelWidth: CGFloat = 110
-        keyLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
-        langLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
-        llmLabel.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
-
-        // ── Get API Key link ──
-        let linkButton = NSButton(title: "Get API Key at console.groq.com", target: nil, action: nil)
-        linkButton.isBordered = false
-        linkButton.attributedTitle = NSAttributedString(
-            string: "Get API Key at console.groq.com",
-            attributes: [
-                .foregroundColor: NSColor.linkColor,
-                .font: NSFont.systemFont(ofSize: 12),
-                .underlineStyle: NSUnderlineStyle.single.rawValue
-            ]
-        )
-        linkButton.target = self
-        linkButton.action = #selector(openGroqConsole)
-
-        // ── Buttons ──
-        let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-        cancelButton.bezelStyle = .rounded
-        cancelButton.keyEquivalent = "\u{1b}" // Escape
-
-        let saveButton = NSButton(title: "Save", target: nil, action: nil)
-        saveButton.bezelStyle = .rounded
-        saveButton.keyEquivalent = "\r" // Enter
-
-        let buttonRow = NSStackView(views: [cancelButton, saveButton])
-        buttonRow.orientation = .horizontal
-        buttonRow.spacing = 10
-
-        // ── Main stack ──
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [keyRow, langRow, llmRow, vadCheckbox, linkButton, spacer, buttonRow])
-        stack.orientation = .vertical
-        stack.spacing = 16
-        stack.alignment = .leading
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        window.contentView = stack
-
-        // ── Constraints ──
-        NSLayoutConstraint.activate([
-            keyRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
-            keyRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
-            langRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
-            langRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
-            llmRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 24),
-            llmRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
-            buttonRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -24),
-        ])
-
-        // ── Actions (closures via target-action) ──
-        cancelButton.target = self
-        cancelButton.action = #selector(preferencesCancel)
-
-        // Save needs references to the fields — store them via tags + associated approach
-        // Using a simpler approach: store references and use a single save action
-        self.preferencesWindow = window
-        self._prefsKeyField = keyField
-        self._prefsLangPopup = langPopup
-        self._prefsLLMPopup = llmPopup
-        self._prefsVADCheckbox = vadCheckbox
-
-        saveButton.target = self
-        saveButton.action = #selector(preferencesSave)
-
+        preferencesWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    // Stored references for preferences fields (weak not needed — window holds them)
-    private var _prefsKeyField: NSSecureTextField?
-    private var _prefsLangPopup: NSPopUpButton?
-    private var _prefsLLMPopup: NSPopUpButton?
-    private var _prefsVADCheckbox: NSButton?
-
-    @objc private func preferencesSave() {
-        guard let keyField = _prefsKeyField, let langPopup = _prefsLangPopup else { return }
-        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let langCode = (langPopup.selectedItem?.representedObject as? String) ?? "auto"
-        let llmRaw = (_prefsLLMPopup?.selectedItem?.representedObject as? String) ?? "never"
-        let llmMode = LLMCorrectionMode(rawValue: llmRaw) ?? .never
-        let vadEnabled = _prefsVADCheckbox?.state == .on
-
-        Config.save(groqKey: key, language: langCode, llmCorrection: llmMode, vadAutoStop: vadEnabled)
-        config = Config.load()
-
-        preferencesWindow?.close()
-        preferencesWindow = nil
-        _prefsKeyField = nil
-        _prefsLangPopup = nil
-        _prefsLLMPopup = nil
-        _prefsVADCheckbox = nil
-    }
-
-    @objc private func preferencesCancel() {
-        preferencesWindow?.close()
-        preferencesWindow = nil
-        _prefsKeyField = nil
-        _prefsLangPopup = nil
-        _prefsLLMPopup = nil
-        _prefsVADCheckbox = nil
-    }
-
-    @objc private func openGroqConsole() {
-        if let url = URL(string: "https://console.groq.com/keys") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     // ─── Timing Display (US-002) ──────────────────────────────────

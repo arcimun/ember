@@ -139,7 +139,7 @@ class Recorder {
                 }
 
                 // VAD: track speech and silence frames
-                if config.vadAutoStop {
+                if EmberConfig.shared.vadAutoStop {
                     if rms >= self.silenceThreshold {
                         self.speechFrameCount += 1
                         self.silentFrameCount = 0
@@ -269,8 +269,8 @@ class Recorder {
         }
 
         let filePath = audioFilePath
-        let apiKey = config.groqKey
-        let language = config.language
+        let apiKey = EmberConfig.shared.groqKey
+        let language = EmberConfig.shared.language
 
         let startTime = self.recordingStartTime
         transcribeWithGroq(filePath: filePath, apiKey: apiKey, language: language) { [weak self] result, sttError in
@@ -308,7 +308,7 @@ class Recorder {
             // Determine whether to run LLM correction
             let wordCount = rawText.components(separatedBy: .whitespaces).filter { !$0.isEmpty }.count
             let shouldUseLLM: Bool
-            switch config.llmCorrection {
+            switch EmberConfig.shared.llmCorrection {
             case .always:
                 shouldUseLLM = true
             case .never:

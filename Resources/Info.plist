@@ -26,6 +26,8 @@
     <string>Ember</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Ember needs microphone access for voice transcription.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Ember needs Accessibility access to paste transcribed text into other apps.</string>
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/arcimun/ember/main/appcast.xml</string>
     <key>SUPublicEDKey</key>
