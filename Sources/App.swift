@@ -57,11 +57,25 @@ func setupCarbonHotkeys() -> Bool {
         return true
     }
 
-    let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2)
-    RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
 
     log("✅ Carbon hotkeys registered (keyCode: \(cfg.hotkeyKeyCode), mods: \(cfg.hotkeyModifiers))")
     return true
+}
+
+/// Register the Escape cancel hotkey — ONLY while recording, so Esc stays free
+/// for the rest of the system when Ember is idle.
+func registerEscapeCancel() {
+    if escapeHotkeyRef != nil { return }
+    let escID = EventHotKeyID(signature: OSType(0x44494354), id: 2)
+    RegisterEventHotKey(UInt32(kVK_Escape), 0, escID, GetApplicationEventTarget(), 0, &escapeHotkeyRef)
+}
+
+/// Remove the Escape cancel hotkey when recording ends.
+func unregisterEscapeCancel() {
+    if let ref = escapeHotkeyRef {
+        UnregisterEventHotKey(ref)
+        escapeHotkeyRef = nil
+    }
 }
 
 /// Re-register the recording hotkey at runtime (called from Settings when user changes hotkey)
@@ -462,7 +476,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     }
 
     @objc func openHistory() { HistoryWindowManager.shared.show() }
-    @objc func quitApp() { if recorder.isRecording { recorder.stopRecording() }; NSApp.terminate(nil) }
+    @objc func quitApp() { if recorder.isRecording { recorder.stopRecording() }; unregisterEscapeCancel(); NSApp.terminate(nil) }
 
     // ─── Theme Switching ──────────────────────────────────────────
     func buildThemeMenu() {
@@ -535,12 +549,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
 
     // ─── RecorderDelegate ─────────────────────────────────────────
     func recorderDidStartRecording() {
+        registerEscapeCancel()
         setRecordingState(true)
         setThemeMenuEnabled(false)
         overlayWindow?.show()
     }
 
     func recorderDidStopRecording() {
+        unregisterEscapeCancel()
         setRecordingState(false)
         setThemeMenuEnabled(true)
     }
@@ -578,6 +594,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     }
 
     func recorderDidEncounterError(_ error: EmberError) {
+        unregisterEscapeCancel()
         // Reset processing state and hide overlay
         setProcessingState(false)
         setRecordingState(false)
@@ -598,6 +615,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, RecorderDelegate {
     }
 
     func recorderDidCancel() {
+        unregisterEscapeCancel()
         setRecordingState(false)
         setThemeMenuEnabled(true)
         overlayWindow?.hide()
